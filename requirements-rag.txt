@@ -1,0 +1,2 @@
+# Python >= 3.10. Retrieval uses only the standard library.
+# No additional packages are required; do not replace team requirements.txt.
