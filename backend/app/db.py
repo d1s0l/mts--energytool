@@ -1,4 +1,4 @@
-"""Пул подключений PostgreSQL. Схема данных пока не определена."""
+"""Пул подключений PostgreSQL. Схема находится в app/migrations/."""
 
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool

@@ -7,12 +7,15 @@ from fastapi import FastAPI
 
 from app.config import Settings
 from app.db import create_pool
+from app.migrate import migrate
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = Settings()
     async with create_pool(settings.database_url) as pool:
+        async with pool.connection() as conn:
+            await migrate(conn)
         app.state.db_pool = pool
         yield
 
