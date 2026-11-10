@@ -1,3 +1,4 @@
+
 .sidebar {
   position: relative;
   width: var(--sidebar-width, 280px);
@@ -50,131 +51,22 @@
   padding: 24px 18px 20px;
 }
 
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 24px;
-  color: var(--mts-ink);
-  font-size: 16px;
-  font-weight: 700;
-}
-
-.brandMark {
-  width: 30px;
-  height: 30px;
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  color: var(--mts-white);
-  background: var(--mts-red);
-  border-radius: 9px;
-  font-weight: 800;
-}
-
-.createButton {
-  width: 100%;
-  min-height: 44px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 9px;
-  color: var(--mts-white);
-  background: var(--mts-red);
-  border: 1px solid var(--mts-red);
-  border-radius: 10px;
-  font-weight: 600;
-  transition: background-color 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
-
-  &:hover {
-    background: var(--mts-red-hover);
-    border-color: var(--mts-red-hover);
-  }
-
-  &:active {
-    background: var(--mts-red-active);
-    border-color: var(--mts-red-active);
-    transform: translateY(1px);
-  }
-
-  &:focus-visible {
-    outline: 2px solid var(--mts-red);
-    outline-offset: 3px;
-  }
-}
-
 .history {
   min-height: 0;
   flex: 1;
   display: flex;
   flex-direction: column;
-  padding: 0 12px;
+  padding: 0 20px;
 }
 
 .sectionTitle {
   margin: 0;
-  padding: 0 8px 12px;
+  padding: 0 0 12px;
   color: var(--mts-ink-muted);
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-}
-
-.chatList {
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding-bottom: 12px;
-}
-
-.chatItem {
-  width: 100%;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 11px 10px;
-  color: var(--mts-ink-muted);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 9px;
-  text-align: left;
-  transition: color 0.18s ease, background-color 0.18s ease, border-color 0.18s ease;
-
-  svg {
-    flex: 0 0 auto;
-  }
-
-  span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  &:hover {
-    color: var(--mts-ink);
-    background: var(--mts-surface-muted);
-  }
-
-  &:focus-visible {
-    outline: 2px solid var(--mts-red);
-    outline-offset: 1px;
-  }
-}
-
-.active {
-  color: var(--mts-red);
-  background: var(--mts-red-soft);
-  border-color: var(--mts-red-soft);
-}
-
-.emptyState {
-  margin: 4px 8px;
-  color: var(--mts-ink-muted);
-  font-size: 13px;
-  line-height: 1.5;
 }
 
 .footer {

@@ -10,7 +10,7 @@ export const baseApi = createApi({
         
     }),
 
-    tagTypes: ['Chat', 'Message'],
+    tagTypes: ['Session', 'Message', 'Lead'],
 
     endpoints: () => ({}),
 });
