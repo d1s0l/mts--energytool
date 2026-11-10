@@ -1,9 +1,21 @@
-import { Chat } from "@/widgets/chat/ui/Chat";
+import { useOutletContext } from 'react-router';
 
-export default function HomePage() {
-    return(
-        <main>
-            <Chat />
-        </main>
-    )
+interface ChatPageContext {
+  activeSessionId: string | null;
+  setActiveSessionId: (id: string | null) => void;
+}
+
+export function ChatPage() {
+  const {
+    activeSessionId,
+    setActiveSessionId,
+  } = useOutletContext<ChatPageContext>();
+
+  return (
+    <div>
+      {activeSessionId
+        ? `Активный диалог: ${activeSessionId}`
+        : 'Выберите диалог или создайте новый'}
+    </div>
+  );
 }

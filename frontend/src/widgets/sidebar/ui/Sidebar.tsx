@@ -1,25 +1,24 @@
-import { Plus } from 'lucide-react';
 import styles from './Sidebar.module.scss';
-import type { ChatSummary } from '../model/types';
+
+import { SessionList } from '@/entities/session/ui/SessionList/SessionList';
+import { CreateSessionButton } from '@/features/create-session/ui/CreateSessionButton/CreateSessionButton';
 
 interface SidebarProps {
-  chats: ChatSummary[];
-  activeChatId: string | null;
+  activeSessionId: string | null;
   width: number;
   isResizing: boolean;
-  onResizePointerDown: (event: React.PointerEvent<HTMLDivElement>) => void;
-  onCreateChat: () => void;
-  onSelectChat: (chatId: string) => void;
+  onResizePointerDown: (
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => void;
+  onSelectSession: (sessionId: string) => void;
 }
 
 export function Sidebar({
-  chats,
-  activeChatId,
+  activeSessionId,
   width,
   isResizing,
   onResizePointerDown,
-  onCreateChat,
-  onSelectChat,
+  onSelectSession,
 }: SidebarProps) {
   return (
     <aside
@@ -28,40 +27,28 @@ export function Sidebar({
       aria-label="История диалогов"
     >
       <div className={styles.top}>
-        <button className={styles.createButton} onClick={onCreateChat} type="button">
-          <Plus size={18} aria-hidden="true" />
-          <span>Новый диалог</span>
-        </button>
+        <CreateSessionButton onCreated={onSelectSession} />
       </div>
 
-      <section className={styles.history} aria-labelledby="chat-history-title">
+      <section
+        className={styles.history}
+        aria-labelledby="chat-history-title"
+      >
         <h2 className={styles.sectionTitle} id="chat-history-title">
           История диалогов
         </h2>
-        <div className={styles.chatList}>
-          {chats.length === 0 ? (
-            <p className={styles.emptyState}>Здесь появятся ваши диалоги</p>
-          ) : (
-            chats.map((chat) => (
-              <button
-                aria-current={activeChatId === chat.id ? 'page' : undefined}
-                className={`${styles.chatItem} ${activeChatId === chat.id ? styles.active : ''}`}
-                key={chat.id}
-                onClick={() => onSelectChat(chat.id)}
-                title={chat.title}
-                type="button"
-              >
-                <span>{chat.title}</span>
-              </button>
-            ))
-          )}
-        </div>
+
+        <SessionList
+          activeSessionId={activeSessionId}
+          onSelect={onSelectSession}
+        />
       </section>
 
       <div className={styles.footer}>
         <span className={styles.footerAccent} aria-hidden="true" />
         <p>Ваш помощник от МТС</p>
       </div>
+
       <div
         className={styles.resizeHandle}
         role="separator"
