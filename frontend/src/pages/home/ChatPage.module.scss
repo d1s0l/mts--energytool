@@ -60,7 +60,6 @@
   transform: translateX(-50%);
 }
 
-
 .messages {
   display: flex;
   flex-direction: column;
@@ -83,8 +82,22 @@
 }
 
 .assistantMessage {
+  align-self: flex-end;
+  max-width: 80%;
+  padding: 12px 16px;
+  border-radius: 16px 16px 16px 4px;
+  line-height: 1.5;
+  //может быть background добавить
+  white-space: pre-wrap;
   align-self: flex-start;
   max-width: 90%;
   line-height: 1.6;
   white-space: pre-wrap;
+}
+
+.retryButton {
+  color: var(--mts-ink);
+  border: 1px solid var(--mts-border);
+  border-radius: 8px;
+  padding: 8px 12px;
 }
