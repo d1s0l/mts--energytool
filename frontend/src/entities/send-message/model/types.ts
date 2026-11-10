@@ -1,8 +1,15 @@
+
 import type { Message } from '@/entities/message/model/types';
+import type { SessionState } from '@/entities/session/model/session.types';
 
 export interface SendMessageRequest {
-  chatId: string;
-  content: string;
+  sessionId: string;
+  text: string;
 }
 
-export type SendMessageResponse = Message;
+export interface SendMessageResponse {
+  session_id: string;
+  state: SessionState;
+  user_message: Message;
+  assistant_message: Message;
+}
