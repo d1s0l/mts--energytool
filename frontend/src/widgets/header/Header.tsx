@@ -1,6 +1,6 @@
 import { ThemeSwitcher } from "@/features/change-theme/ui/ThemeSwitcher";
 import styles from './Header.module.scss'
-import { Link } from "react-router";
+import { DebugButton } from "@/features/debug-mode-button/ui/DebugButton";
 
 export function Header() {
     return(
@@ -10,8 +10,7 @@ export function Header() {
             </div>
 
             <div className={styles.button__block}>
-                
-                <Link className={styles.debug_mode} to='/'>Debug mode</Link>
+                <DebugButton />
                 
                 <ThemeSwitcher />
             </div>

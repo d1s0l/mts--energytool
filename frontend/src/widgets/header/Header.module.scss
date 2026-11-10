@@ -1,5 +1,3 @@
-@use '@/app/styles/variables' as v;
-
 .header{
     width: 100%;
     padding-inline: 40px;
@@ -14,10 +12,4 @@
     gap: 28px;
     justify-content: space-between;
     align-items: center;
-
-    .debug_mode{
-        border: 1px solid var(--mts-border);
-        padding: 8px 20px;
-        border-radius: v.$border-radius-btn;
-    }
 }
