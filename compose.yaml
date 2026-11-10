@@ -15,9 +15,25 @@ services:
       retries: 20
 
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     environment:
+      KNOWLEDGE_BASE_PATH: /data/knowledge-base.zip
+      RAG_MODE: ${RAG_MODE:-local}
+      MAX_WORKERS: ${MAX_WORKERS:-3}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      EMB_MODEL: ${EMB_MODEL:-BAAI/bge-m3}
+      RERANKER_MODEL: ${RERANKER_MODEL:-}
       DATABASE_URL: postgresql://energytool:${POSTGRES_PASSWORD:-energytool}@postgres:5432/energytool
+    volumes:
+      - type: bind
+        source: ${KNOWLEDGE_BASE_PATH:?Set KNOWLEDGE_BASE_PATH in .env to the knowledge-base.zip path}
+        target: /data/knowledge-base.zip
+        read_only: true
+        bind:
+          create_host_path: false
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:

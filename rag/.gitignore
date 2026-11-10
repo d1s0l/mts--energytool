@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.env
+data/
+knowledge-base.zip
+retrieval_report.json
