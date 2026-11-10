@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from psycopg.conninfo import make_conninfo
 
 from app.config import Settings
+from app.consultant import ConsultantReply
 from app.main import create_app
 from tests.test_migrations import database
 
@@ -67,5 +68,75 @@ def test_sessions_persist_and_history_is_isolated(tmp_path, monkeypatch):
             with TestClient(create_app(settings)) as client:
                 assert client.get("/api/sessions").json()["total"] == 2
                 assert len(client.get(f"/api/sessions/{first['id']}").json()["messages"]) == 2
+
+    asyncio.run(run())
+
+
+def test_send_message_saves_turn_and_rolls_back_on_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("RAG_MODE", "local")
+    (tmp_path / "kb.md").write_text("# Учёт\nУчёт потребления.\n", encoding="utf-8")
+
+    async def consultant(*, text, history, search):
+        assert search.engine.info["documents"] == 1
+        assert history == [{"role": "user", "content": "Предыдущий вопрос"}]
+        if text == "Тайм-аут":
+            raise TimeoutError
+        assert text == "Новый вопрос"
+        return ConsultantReply(text="Ответ", state="awaiting_contacts", generation_ms=25)
+
+    async def run():
+        async with database() as conn:
+            schema = (await (await conn.execute("SELECT current_schema() AS name")).fetchone())[
+                "name"
+            ]
+            settings = Settings(
+                database_url=make_conninfo(
+                    os.environ["TEST_DATABASE_URL"], options=f"-c search_path={schema}"
+                ),
+                knowledge_base_path=tmp_path,
+            )
+            application = create_app(settings)
+            with TestClient(application) as client:
+                session_id = client.post("/api/sessions").json()["id"]
+                detail = f"/api/sessions/{session_id}"
+                path = f"{detail}/messages"
+                assert client.post(path, json={"text": " "}).status_code == 422
+                assert (
+                    client.post(
+                        f"/api/sessions/{uuid4()}/messages", json={"text": "Вопрос"}
+                    ).status_code
+                    == 404
+                )
+                missing = client.post(path, json={"text": "Вопрос"})
+                assert missing.status_code == 503
+                assert missing.json()["error"]["code"] == "consultant_unavailable"
+                assert client.get(detail).json()["messages"] == []
+
+                await conn.execute(
+                    "INSERT INTO messages (session_id, role, text) VALUES (%s, 'user', %s)",
+                    (session_id, "Предыдущий вопрос"),
+                )
+                application.state.consultant = consultant
+                async with conn.transaction():
+                    await conn.execute(
+                        "SELECT id FROM sessions WHERE id = %s FOR UPDATE", (session_id,)
+                    )
+                    assert client.post(path, json={"text": "Вопрос"}).status_code == 409
+                timed_out = client.post(path, json={"text": "Тайм-аут"})
+                assert timed_out.status_code == 504
+                before = client.get(detail).json()
+                assert before["state"] == "chatting"
+                assert len(before["messages"]) == 1
+
+                response = client.post(path, json={"text": "  Новый вопрос  "})
+                assert response.status_code == 200
+                turn = response.json()
+                assert turn["state"] == "awaiting_contacts"
+                assert turn["user_message"]["text"] == "Новый вопрос"
+                assert turn["assistant_message"]["text"] == "Ответ"
+                assert turn["assistant_message"]["debug"]["generation_ms"] == 25
+                saved = client.get(detail).json()
+                assert saved["state"] == turn["state"]
+                assert saved["messages"][1:] == [turn["user_message"], turn["assistant_message"]]
 
     asyncio.run(run())

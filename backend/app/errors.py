@@ -18,8 +18,14 @@ def error_response(status: int, code: str, message: str, details: list | None = 
 def register_errors(app: FastAPI) -> None:
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException):
-        if exc.detail == "session_not_found":
-            return error_response(404, "session_not_found", "Диалог не найден")
+        messages = {
+            "session_not_found": "Диалог не найден",
+            "session_busy": "В диалоге уже обрабатывается сообщение",
+            "consultant_unavailable": "Консультант временно недоступен",
+            "consultant_timeout": "Консультант не ответил вовремя",
+        }
+        if isinstance(exc.detail, str) and exc.detail in messages:
+            return error_response(exc.status_code, exc.detail, messages[exc.detail])
         return error_response(exc.status_code, "http_error", str(exc.detail))
 
     @app.exception_handler(RequestValidationError)
