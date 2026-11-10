@@ -1,4 +1,4 @@
-import { MessageSquare, Plus } from 'lucide-react';
+import { Plus } from 'lucide-react';
 import styles from './Sidebar.module.scss';
 import type { ChatSummary } from '../model/types';
 
@@ -51,7 +51,6 @@ export function Sidebar({
                 title={chat.title}
                 type="button"
               >
-                <MessageSquare size={17} aria-hidden="true" />
                 <span>{chat.title}</span>
               </button>
             ))
