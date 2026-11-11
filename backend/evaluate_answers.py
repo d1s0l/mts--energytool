@@ -21,12 +21,14 @@ from solution import read_questions, split_dialog
 
 
 class EvaluationClient(ModelClient):
-    def __init__(self, config, interval=15):
+    def __init__(self, config, interval=15, trace=False):
         super().__init__(config)
         self.calls = 0
         self.interval = interval
         self.last_call = None
         self.outputs = []
+        self.trace = trace
+        self.traces = []
 
     async def complete(self, messages):
         # Yield before every model call, including repair/review, so cancellation is delivered.
@@ -35,9 +37,22 @@ class EvaluationClient(ModelClient):
             time.sleep(max(0, self.interval - (time.monotonic() - self.last_call)))
         self.last_call = time.monotonic()
         self.calls += 1
-        content = self._request(messages)
-        self.outputs.append(content)
-        return content
+        started = time.monotonic()
+        record = {"messages": messages, "status": "started"} if self.trace else None
+        try:
+            content = self._request(messages)
+            self.outputs.append(content)
+            if record is not None:
+                record.update(output=content, status="answered")
+            return content
+        except Exception as exc:
+            if record is not None:
+                record.update(status="failed", error_type=type(exc).__name__)
+            raise
+        finally:
+            if record is not None:
+                record["seconds"] = round(time.monotonic()-started, 3)
+                self.traces.append(record)
 
 
 class EvaluationSearch:
@@ -70,6 +85,7 @@ def evaluate(questions, consultant, client, search, report, output):
             started = time.monotonic()
             calls_before = client.calls
             output_start = len(client.outputs)
+            trace_start = len(getattr(client, "traces", []))
             search.last_result = None
             row = {'id': qid, 'question': question}
             stop = False
@@ -92,6 +108,8 @@ def evaluate(questions, consultant, client, search, report, output):
                     stop = True
             row.update(seconds=round(time.monotonic()-started, 3), model_calls=client.calls-calls_before,
                        model_outputs=client.outputs[output_start:])
+            if getattr(client, "trace", False):
+                row["request_traces"] = client.traces[trace_start:]
             if search.last_result:
                 row['retrieved'] = search.last_result
             known[qid] = row
@@ -124,6 +142,7 @@ def main():
     parser.add_argument('--interval', type=float, default=15,
                         help='Minimum seconds between model calls, including review/repair')
     parser.add_argument('--restart', action='store_true')
+    parser.add_argument('--trace', action='store_true', help='Record model messages and outputs; test data only')
     parser.add_argument('--baseline', action='store_true', help='Disable semantic review for comparison')
     args = parser.parse_args()
     if not math.isfinite(args.interval) or args.interval < 0:
@@ -133,7 +152,7 @@ def main():
         for key, value in dotenv_values(args.env).items():
             if value is not None:
                 os.environ[key] = value
-    client = EvaluationClient(ModelConfig.from_env(), interval=args.interval)
+    client = EvaluationClient(ModelConfig.from_env(), interval=args.interval, trace=args.trace)
     questions = read_questions(args.questions)
     if args.ids:
         chosen = {item.strip() for item in args.ids.split(',') if item.strip()}
