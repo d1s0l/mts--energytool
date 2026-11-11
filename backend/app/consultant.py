@@ -4,7 +4,9 @@ from typing import Annotated, Literal, Protocol, TypedDict
 
 from pydantic import BaseModel, Field, FiniteFloat, StringConstraints
 
-from app.rag import SearchService
+
+class Search(Protocol):
+    async def search(self, question: str, history: list[dict] | None = None) -> dict: ...
 
 
 class HistoryMessage(TypedDict):
@@ -34,7 +36,7 @@ class ConsultantUnavailable(Exception):
 
 class Consultant(Protocol):
     async def __call__(
-        self, *, text: str, history: list[HistoryMessage], search: SearchService
+        self, *, text: str, history: list[HistoryMessage], search: Search
     ) -> ConsultantReply:
         """Принять предыдущие реплики и текущий вопрос, вернуть ответ и метаданные."""
         ...
