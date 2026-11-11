@@ -11,11 +11,11 @@ from collections import deque
 from pathlib import Path
 
 try:
-    from consultant import Consultant, ConsultantReply, HistoryMessage
+    from consultant import Consultant, ConsultantReply, ConsultantUnavailable, HistoryMessage
 except ModuleNotFoundError as exc:
     if exc.name != "consultant":
         raise
-    from app.consultant import Consultant, ConsultantReply, HistoryMessage
+    from app.consultant import Consultant, ConsultantReply, ConsultantUnavailable, HistoryMessage
 
 try:
     from rag_search import Config, KnowledgeSearch
@@ -170,6 +170,8 @@ def main() -> int:
             isinstance(exc, RuntimeError) and "consultant_impl.py" in str(exc)
         ):
             print("Connect consultant_impl.py exporting create_consultant()", file=sys.stderr)
+        if isinstance(exc, ConsultantUnavailable):
+            print("Configure LLM_BASE_URL, LLM_API_KEY and LLM_MODEL", file=sys.stderr)
         return 1
     return 0
 
