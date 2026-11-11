@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
+from app.api.health import router as health_router
 from app.api.leads import router as leads_router
 from app.api.sessions import router
 from app.config import Settings
@@ -43,6 +44,7 @@ def create_app(
     register_errors(application)
     application.include_router(router)
     application.include_router(leads_router)
+    application.include_router(health_router)
     return application
 
 
