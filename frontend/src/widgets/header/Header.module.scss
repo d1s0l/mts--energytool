@@ -1,0 +1,15 @@
+.header{
+    width: 100%;
+    padding-inline: 40px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--mts-border);
+}
+
+.button__block{
+    display: flex;
+    gap: 28px;
+    justify-content: space-between;
+    align-items: center;
+}
