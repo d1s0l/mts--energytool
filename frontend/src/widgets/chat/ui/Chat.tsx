@@ -9,8 +9,8 @@ export function Chat() {
   const handleSendMessage = async (message: string) => {
     try {
       const response = await sendMessage({
-        chatId: 'current-chat-id',
-        content: message,
+        sessionId: 'current-chat-id',
+        text: message,
       }).unwrap();
 
       console.log(response);

@@ -30,7 +30,15 @@ export const sessionApi = baseApi.injectEndpoints({
       query: (sessionId) => `/sessions/${sessionId}`,
       providesTags: (_result, _error, sessionId) => [{ type: 'Session', id: sessionId }],
     }),
+
+    deleteChat: builder.mutation<void, string>({
+      query: (sessionId) => ({
+        url: `/sessions/${sessionId}`,
+        method: 'DELETE',
+      }),
+      invalidatesTags: ['Session'],
+    }),
   }),
 });
 
-export const { useCreateChatMutation, useGetChatsQuery, useGetChatQuery } = sessionApi;
+export const { useCreateChatMutation, useGetChatsQuery, useGetChatQuery, useDeleteChatMutation } = sessionApi;
