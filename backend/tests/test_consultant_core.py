@@ -385,6 +385,15 @@ class GroundingReviewTests(unittest.TestCase):
             asyncio.run(GroundingReviewer(client).check(
                 json.loads(output()), "Ответ", [], {"fact": HIT}))
 
+    def test_semantic_review_allows_equivalent_support_formatting(self):
+        draft = output(answer_support=[{"text": "Ориентир: 25 000 рублей в год. Итог зависит от проекта.",
+                                       "evidence_id": "fact", "quote": HIT["text"]}])
+        client = Client([draft, self.verdict()])
+        reply = asyncio.run(EnergyConsultant(client, reviewer=GroundingReviewer(client))(
+            text="Цена?", history=[], search=Search()))
+        self.assertEqual(client.calls, 2)
+        self.assertIn("25 000", reply.text)
+
     def test_factory_enables_review_by_default(self):
         from consultant_impl import create_consultant
         with patch.dict(os.environ, {"LLM_BASE_URL": "http://provider", "LLM_API_KEY": "test-only",

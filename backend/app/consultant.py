@@ -36,6 +36,12 @@ class ConsultantUnavailable(Exception):
     """Модель или поиск временно недоступны."""
 
 
+class ModelRateLimited(ConsultantUnavailable):
+    def __init__(self, retry_after: float = 60):
+        self.retry_after = max(1, min(3600, retry_after))
+        super().__init__("Model rate limit")
+
+
 class Consultant(Protocol):
     async def __call__(
         self, *, text: str, history: list[HistoryMessage], search: Search

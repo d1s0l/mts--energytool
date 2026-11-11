@@ -11,7 +11,7 @@ from psycopg.errors import LockNotAvailable
 from psycopg.types.json import Jsonb
 
 from app.access import require_access, token_hash
-from app.consultant import ConsultantReply, ConsultantUnavailable
+from app.consultant import ConsultantReply, ConsultantUnavailable, ModelRateLimited
 from app.schemas import (
     LeadIn,
     SendMessageIn,
@@ -258,6 +258,9 @@ async def send_message(session_id: UUID, body: SendMessageIn, request: Request):
         await asyncio.shield(cleanup())
         if isinstance(exc, TimeoutError):
             raise HTTPException(504, "consultant_timeout") from None
+        if isinstance(exc, ModelRateLimited):
+            raise HTTPException(429, "model_rate_limited",
+                                headers={"Retry-After": str(max(1, int(exc.retry_after)))}) from None
         if isinstance(exc, ConsultantUnavailable):
             raise HTTPException(503, "consultant_unavailable") from None
         raise

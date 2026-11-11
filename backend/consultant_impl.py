@@ -8,12 +8,13 @@ import re
 import time
 import urllib.error
 import urllib.request
+from email.utils import parsedate_to_datetime
 from dataclasses import dataclass, field
 
 try:
-    from consultant import ConsultantReply, ConsultantUnavailable
+    from consultant import ConsultantReply, ConsultantUnavailable, ModelRateLimited
 except ModuleNotFoundError:
-    from app.consultant import ConsultantReply, ConsultantUnavailable
+    from app.consultant import ConsultantReply, ConsultantUnavailable, ModelRateLimited
 
 
 log = logging.getLogger(__name__)
@@ -141,8 +142,11 @@ class ModelClient:
     def __init__(self, config):
         self.config = config
         self._slots = asyncio.Semaphore(config.max_workers)
+        self._cooldown_until = 0.0
 
     def _request(self, messages):
+        if self._cooldown_until > time.monotonic():
+            raise ModelRateLimited(self._cooldown_until - time.monotonic())
         cfg = self.config
         payload = {
             "model": cfg.model,
@@ -178,6 +182,20 @@ class ModelClient:
                     raise ValueError("Incomplete model response")
                 return content
             except urllib.error.HTTPError as exc:
+                if exc.code == 429:
+                    retry_after = 60.0
+                    header = exc.headers.get("Retry-After") if exc.headers else None
+                    if header:
+                        try:
+                            retry_after = float(header)
+                        except ValueError:
+                            try:
+                                retry_after = parsedate_to_datetime(header).timestamp() - time.time()
+                            except (ValueError, TypeError, OverflowError):
+                                pass
+                    limited = ModelRateLimited(retry_after)
+                    self._cooldown_until = time.monotonic() + limited.retry_after
+                    raise limited from None
                 if exc.code not in {429, 500, 502, 503, 504} or attempt:
                     log.warning("Model API request failed (HTTP %s)", exc.code)
                     raise ConsultantUnavailable("Model HTTP error") from None
@@ -232,7 +250,7 @@ def numbers(text):
     }
 
 
-def validate_answer_support(data, evidence, ids, messages):
+def validate_answer_support(data, evidence, ids, messages, *, require_full_coverage=True):
     """Check coverage and verbatim evidence; entailment still needs model evaluation."""
     if data.get("kind") != "product":
         return
@@ -261,7 +279,7 @@ def validate_answer_support(data, evidence, ids, messages):
         if not numbers(text).issubset(numbers(quote) | user_numbers):
             raise ValueError("answer_support number is absent from its evidence quote")
         parts.append(text)
-    if " ".join(" ".join(parts).split()) != " ".join(data["answer"].split()):
+    if require_full_coverage and " ".join(" ".join(parts).split()) != " ".join(data["answer"].split()):
         raise ValueError("answer_support must cover the entire answer in order")
 
 
@@ -490,7 +508,8 @@ class EnergyConsultant:
                     raise ValueError("Answer exceeds limit with follow-up")
                 if data["kind"] == "product" and not ids:
                     raise ValueError("Product answer requires evidence")
-                validate_answer_support(data, evidence, ids, messages)
+                validate_answer_support(data, evidence, ids, messages,
+                                        require_full_coverage=self.reviewer is None)
                 # An uncited answer cannot introduce product figures.
                 supported = "\n".join(evidence[i]["text"] for i in ids)
                 supported += "\n" + "\n".join(m["content"] for m in messages if m["role"] == "user")
