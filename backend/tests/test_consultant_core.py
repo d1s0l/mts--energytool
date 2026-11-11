@@ -15,6 +15,7 @@ from app.consultant import ConsultantReply, ConsultantUnavailable
 from build_submission import build_submission
 from consultant_impl import (
     EnergyConsultant,
+    GroundingReviewer,
     ModelClient,
     ModelConfig,
     contact_intent,
@@ -335,6 +336,63 @@ class ConsultantTests(unittest.TestCase):
                 self.assertTrue(all("/" not in name for name in z.namelist()))
 
 
+
+class GroundingReviewTests(unittest.TestCase):
+    @staticmethod
+    def verdict(**changes):
+        result = {"supported": True, "relevant": True, "conditions_preserved": True,
+                  "question_appropriate": True, "issues": []}
+        result.update(changes)
+        return json.dumps(result, ensure_ascii=False)
+
+    def test_semantic_rejection_repairs_otherwise_valid_quote(self):
+        # A valid citation and no invented numbers do not establish entailment.
+        bad = output(answer="Стоимость фиксирована для любого проекта.")
+        client = Client([bad, self.verdict(supported=False,
+            issues=["Источник говорит, что итог зависит от проекта, а не фиксирован."]),
+            output(), self.verdict()])
+        reply = asyncio.run(EnergyConsultant(client, reviewer=GroundingReviewer(client))(
+            text="Сколько стоит?", history=[], search=Search()))
+        self.assertEqual(client.calls, 4)
+        self.assertNotIn("фиксирована", reply.text)
+        self.assertIn("зависит", reply.text)
+
+    def test_missing_context_question_is_repaired_by_review(self):
+        client = Client([output(follow_up_question=None),
+            self.verdict(question_appropriate=False, issues=["Уточни количество приборов."]),
+            output(), self.verdict()])
+        reply = asyncio.run(EnergyConsultant(client, reviewer=GroundingReviewer(client))(
+            text="Хочу подобрать учет для склада. С чего начать?", history=[], search=Search()))
+        self.assertTrue(reply.text.endswith("Сколько приборов нужно подключить?"))
+
+    def test_closed_faq_can_end_without_unnecessary_question(self):
+        client = Client([output(follow_up_question=None), self.verdict()])
+        reply = asyncio.run(EnergyConsultant(client, reviewer=GroundingReviewer(client))(
+            text="Какая ориентировочная стоимость?", history=[], search=Search()))
+        self.assertEqual(client.calls, 2)
+        self.assertNotIn("?", reply.text)
+
+    def test_rejected_answers_are_not_returned_after_failed_repair(self):
+        rejected = self.verdict(relevant=False, issues=["Ответ на другую тему."])
+        client = Client([output(), rejected, output(), rejected])
+        with self.assertRaises(ConsultantUnavailable):
+            asyncio.run(EnergyConsultant(client, reviewer=GroundingReviewer(client))(
+                text="Вопрос", history=[], search=Search()))
+
+    def test_review_must_return_booleans_not_truthy_strings(self):
+        client = Client([self.verdict(supported="false")])
+        with self.assertRaises(ConsultantUnavailable):
+            asyncio.run(GroundingReviewer(client).check(
+                json.loads(output()), "Ответ", [], {"fact": HIT}))
+
+    def test_factory_enables_review_by_default(self):
+        from consultant_impl import create_consultant
+        with patch.dict(os.environ, {"LLM_BASE_URL": "http://provider", "LLM_API_KEY": "test-only",
+                                    "LLM_MODEL": "platform-model"}, clear=True):
+            consultant = create_consultant()
+        self.assertIsInstance(consultant.reviewer, GroundingReviewer)
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -363,6 +421,8 @@ def test_default_consultant_connects_to_existing_session_and_lead_api(tmp_path, 
 
     def request(client, messages):
         payload = json.loads(messages[-1]["content"])
+        if isinstance(payload, dict) and "answer" in payload and "dialog" in payload:
+            return GroundingReviewTests.verdict()
         if isinstance(payload, list):
             return json.dumps({"facts": [payload[0]["content"]]}, ensure_ascii=False)
         return json.dumps(
