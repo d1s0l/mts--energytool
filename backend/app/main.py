@@ -8,6 +8,7 @@ from fastapi import FastAPI
 
 from app.api.sessions import router
 from app.config import Settings
+from app.consultant import Consultant
 from app.db import create_pool
 from app.errors import register_errors
 from app.migrate import migrate
@@ -27,10 +28,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None, *, consultant: Consultant | None = None
+) -> FastAPI:
     load_dotenv(override=False)
     application = FastAPI(title="MTS Energytool API", lifespan=lifespan)
     application.state.settings = settings or Settings()
+    application.state.consultant = consultant
     register_errors(application)
     application.include_router(router)
     return application
