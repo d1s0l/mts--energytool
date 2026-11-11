@@ -20,11 +20,25 @@ log = logging.getLogger(__name__)
 
 
 POLICY = """Ты консультант МТС EnergyTool. Отвечай по-русски, понятно, обычно до 150 слов.
+Говори по существу, естественным языком. Не оправдывай ответ ссылкой на свои источники:
+не пиши «это прямо указано в наших рекомендациях», «согласно нашей документации»,
+«как сказано в материалах» и подобные служебные фразы. Документы видны в отладке.
+Вместо «в наших рекомендациях указано, что можно расширять» скажи «Да, мощность
+станции можно наращивать поэтапно». При отсутствии ответа честно скажи, что не можешь
+подтвердить эту возможность, и предложи специалиста. Не выдавай уверенность за аргумент.
 Факты о продуктах, ценах, сроках, энергетике и законодательстве бери ТОЛЬКО из evidence.
 Сведения о клиенте бери только из его сообщений; предыдущий ответ бота не источник фактов.
 Сначала ответь на доступную часть вопроса. Если для выбора решения данных недостаточно,
 задай один полезный вопрос. Не повторяй уже отвеченные вопросы. Учитывай исправления,
 разные объекты и возврат к теме. Не смешивай мощность (кВт) и потребление (кВт·ч).
+Веди консультацию дальше: после продуктового ответа выбери один неизвестный параметр,
+который влияет на подбор решения. Сам вопрос верни ОТДЕЛЬНО в follow_up_question,
+а в answer оставь объяснение. Например, для цены учёта уточни количество приборов,
+для солнечной станции — цель или профиль потребления, для оптового рынка — мощность,
+но только если эти сведения ещё не сообщены. Если параметры уже известны, предложи
+следующий шаг одним вопросом. Не спрашивай «Остались вопросы?» вместо квалификации.
+При отказе от контактов спрашивай про задачу, а не снова про телефон. При готовой
+заявке, постороннем вопросе или просьбе ответить без вопросов продолжать опрос не нужно.
 Сохраняй все существенные оговорки: ориентир не гарантия, цена не предложение,
 экономическая целесообразность не порог допуска, ограничения относятся к своему продукту.
 Справочный показатель не означает, что конкретный клиент соответствует требованиям.
@@ -48,6 +62,9 @@ POLICY = """Ты консультант МТС EnergyTool. Отвечай по-�
 Дополнительные поля: kind — product, clarify, contacts, greeting или unavailable;
 lead_intent_quote — дословная цитата клиента о заявке или передаче контактов;
 lead_facts — до 6 коротких дословных цитат клиента, описывающих актуальную задачу.
+follow_up_question — один короткий вопрос со знаком ? либо null.
+Для kind=product или clarify и при state=awaiting_contacts вопрос обязателен,
+кроме готовой заявки или прямой просьбы пользователя не задавать вопросы.
 Для продуктового ответа обязательно укажи evidence_ids. Для приветствия или сбора контактов
 они могут быть пустыми. Не включай скрытые рассуждения и служебные данные в answer.
 """
@@ -191,6 +208,40 @@ def numbers(text):
         re.sub(r"\s", "", n).replace(",", ".")
         for n in re.findall(r"\d+(?:[ \u00a0]\d{3})*(?:[.,]\d+)?", text)
     }
+
+
+def append_follow_up(data, messages):
+    """Render a separate next question into the actual user-visible reply."""
+    answer = data["answer"].strip()
+    question = data.get("follow_up_question")
+    stop = re.search(
+        r"без (?:уточняющих )?вопросов|не (?:задавай|задавайте|нужно задавать).*вопрос",
+        messages[-1]["content"],
+        re.I,
+    )
+    required = (
+        data.get("kind") in {"product", "clarify"} or data.get("state") == "awaiting_contacts"
+    )
+    if stop or data.get("lead") is not None:
+        return answer
+    if question is None:
+        if required:
+            raise ValueError("Missing follow_up_question: ask one unknown relevant parameter")
+        return answer
+    if (
+        not isinstance(question, str)
+        or not question.strip()
+        or len(question) > 350
+        or question.count("?") != 1
+        or not question.rstrip().endswith("?")
+        or "\x00" in question
+    ):
+        raise ValueError("follow_up_question must be one short question")
+    question = question.strip()
+    for message in messages[-8:-1]:
+        if message["role"] == "assistant" and question.casefold() in message["content"].casefold():
+            raise ValueError("Repeated follow_up_question: use the existing dialog context")
+    return answer if question in answer else answer + "\n\n" + question
 
 
 def contact_intent(quote, messages):
@@ -344,6 +395,21 @@ class EnergyConsultant:
                     "unavailable",
                 }:
                     raise ValueError("Invalid answer kind")
+                answer = append_follow_up(data, messages)
+                if re.search(
+                    r"в наших рекомендациях|согласно нашей документации|"
+                    r"(?:прямо |явно )?указано в (?:наших |предоставленных )?"
+                    r"(?:рекомендациях|материалах)|"
+                    r"как (?:сказано|указано) в (?:наших )?материалах",
+                    answer,
+                    re.I,
+                ):
+                    raise ValueError(
+                        "Explain directly; remove references to internal "
+                        "recommendations or documents"
+                    )
+                if len(answer) > 10000:
+                    raise ValueError("Answer exceeds limit with follow-up")
                 if data["kind"] == "product" and not ids:
                     raise ValueError("Product answer requires evidence")
                 # An uncited answer cannot introduce product figures.
@@ -385,8 +451,11 @@ class EnergyConsultant:
                         {
                             "role": "user",
                             "content": (
-                                "Нарушен контракт: проверь JSON, допустимые ID источников "
-                                "и дословные контакты клиента. Исправь ответ без новых фактов."
+                                "Нарушен контракт: "
+                                + str(exc)[:300]
+                                + ". Проверь JSON, источники, дословные контакты и "
+                                "follow_up_question. Исправь ответ без новых фактов. "
+                                "Не спрашивай уже известные параметры."
                             ),
                         }
                     )

@@ -55,12 +55,54 @@ def output(**changes):
         "kind": "product",
         "evidence_ids": ["fact"],
         "lead": None,
+        "follow_up_question": "Сколько приборов нужно подключить?",
     }
     data.update(changes)
     return json.dumps(data, ensure_ascii=False)
 
 
 class ConsultantTests(unittest.TestCase):
+    def test_internal_recommendation_language_is_rewritten(self):
+        client = Client([output(answer="Это прямо указано в наших рекомендациях."), output()])
+        reply = asyncio.run(EnergyConsultant(client)(text="Цена?", history=[], search=Search()))
+        self.assertEqual(client.calls, 2)
+        self.assertNotIn("рекомендациях", reply.text)
+        self.assertIn("25 000", reply.text)
+
+    def test_follow_up_is_visible_after_answer(self):
+        reply = asyncio.run(
+            EnergyConsultant(Client([output()]))(text="Цена учета?", history=[], search=Search())
+        )
+        self.assertTrue(reply.text.endswith("Сколько приборов нужно подключить?"))
+        self.assertEqual(reply.text.count("?"), 1)
+
+    def test_missing_follow_up_triggers_targeted_repair(self):
+        client = Client([output(follow_up_question=None), output()])
+        reply = asyncio.run(EnergyConsultant(client)(text="Цена?", history=[], search=Search()))
+        self.assertEqual(client.calls, 2)
+        self.assertTrue(reply.text.endswith("?"))
+
+    def test_existing_question_is_not_duplicated(self):
+        question = "Сколько приборов нужно подключить?"
+        client = Client([output(), output(follow_up_question="Как сейчас собираете показания?")])
+        reply = asyncio.run(
+            EnergyConsultant(client)(
+                text="Сорок счетчиков",
+                history=[{"role": "assistant", "content": question}],
+                search=Search(),
+            )
+        )
+        self.assertNotIn(question, reply.text)
+        self.assertTrue(reply.text.endswith("Как сейчас собираете показания?"))
+
+    def test_user_can_request_answer_without_follow_up(self):
+        reply = asyncio.run(
+            EnergyConsultant(Client([output(follow_up_question=None)]))(
+                text="Сколько стоит? Ответьте без вопросов.", history=[], search=Search()
+            )
+        )
+        self.assertNotIn("?", reply.text)
+
     def test_real_sources_and_one_generation(self):
         client = Client([output()])
         reply = asyncio.run(
@@ -259,6 +301,7 @@ def test_default_consultant_connects_to_existing_session_and_lead_api(tmp_path, 
                 "state": "awaiting_contacts",
                 "lead": None,
                 "evidence_ids": [payload["evidence"][0]["id"]],
+                "follow_up_question": "Сколько складов нужно подключить?",
             },
             ensure_ascii=False,
         )
