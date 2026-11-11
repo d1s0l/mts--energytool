@@ -16,6 +16,8 @@ from build_submission import build_submission
 from consultant_impl import (
     EnergyConsultant,
     GroundingReviewer,
+    consultation_plan,
+    validate_project_claims,
     ModelClient,
     ModelConfig,
     contact_intent,
@@ -409,6 +411,74 @@ class GroundingReviewTests(unittest.TestCase):
                                     "LLM_MODEL": "platform-model"}, clear=True):
             consultant = create_consultant()
         self.assertIsInstance(consultant.reviewer, GroundingReviewer)
+
+
+
+class ConsultationPlanningTests(unittest.TestCase):
+    def test_roof_age_is_asked_but_not_when_already_given(self):
+        plan = consultation_plan([{"role": "user", "content": "У нас старая шиферная крыша"}])
+        self.assertEqual(plan["field"], "roof_age")
+        self.assertIsNone(consultation_plan([
+            {"role": "user", "content": "У нас старая шиферная крыша, ей 20 лет"}]))
+
+    def test_model_question_is_selected_for_operator_compatibility(self):
+        plan = consultation_plan([{"role": "user", "content": "В счетчиках симки другого оператора. Их надо менять?"}])
+        self.assertEqual(plan["field"], "device_models")
+
+    def test_completed_slot_is_not_asked_again(self):
+        messages = [{"role": "user", "content": "Симки другого оператора надо менять?"},
+                    {"role": "assistant", "content": "Какие у вас модели счётчиков?"},
+                    {"role": "user", "content": "Не знаю модель, подскажите, где посмотреть"}]
+        self.assertIsNone(consultation_plan(messages))
+
+    def test_night_and_evening_project_needs_daytime_data(self):
+        messages = [{"role": "user", "content": "Хотим солнечную станцию, потребление в основном вечером"},
+                    {"role": "user", "content": "У сетевой станции есть смысл?"}]
+        plan = consultation_plan(messages)
+        self.assertEqual(plan["field"], "daytime_consumption")
+        with self.assertRaises(ValueError):
+            validate_project_claims("Смысл есть, совпадение будет небольшим.", plan)
+        validate_project_claims("Может иметь смысл, если есть потребление днём.", plan)
+
+    def test_unsupported_workshop_design_is_rejected(self):
+        with self.assertRaises(ValueError):
+            validate_project_claims("Для учёта нужно, чтобы на каждый цех стоял свой прибор учёта.", None)
+        validate_project_claims("Можно видеть потребление по цехам. Схему подключения проверит специалист.", None)
+
+    def test_tenant_plan_uses_existing_history_and_asks_meter_count(self):
+        messages = [{"role": "user", "content": "Хотим учет по арендаторам"},
+                    {"role": "user", "content": "Приборы есть. Часть присылает фото, часть обходит техник. С чего начать?"}]
+        self.assertEqual(consultation_plan(messages)["field"], "meter_count")
+        messages.append({"role": "user", "content": "Всего 40 счетчиков, с чего начать подключение?"})
+        self.assertEqual(consultation_plan(messages)["field"], "device_models")
+
+    def test_loss_data_split_is_not_inferred_from_archive_length(self):
+        messages = [{"role": "user", "content": "Мы электросетевая компания, ищем потери"},
+                    {"role": "user", "content": "Архив два года, суточные данные. Хватит для начала?"}]
+        self.assertEqual(consultation_plan(messages)["field"], "day_night_split")
+
+    def test_missing_follow_up_is_rendered_from_plan_without_extra_generation(self):
+        client = Client([output(answer="Нужно уточнить состояние кровли.", kind="clarify",
+                                follow_up_question=None)])
+        reply = asyncio.run(EnergyConsultant(client)(
+            text="У нас старая шиферная крыша", history=[], search=Search()))
+        self.assertTrue(reply.text.endswith("Сколько лет вашей кровле?"))
+        self.assertEqual(client.calls, 1)
+
+    def test_no_question_request_takes_precedence_over_plan(self):
+        client = Client([output(answer="Нужно уточнить состояние кровли.", kind="clarify",
+                                follow_up_question=None)])
+        reply = asyncio.run(EnergyConsultant(client)(
+            text="У нас старая шиферная крыша. Ответьте без вопросов.", history=[], search=Search()))
+        self.assertNotIn("?", reply.text)
+
+    def test_power_category_question_is_not_mistaken_for_sim(self):
+        self.assertIsNone(consultation_plan([{"role": "user", "content":
+            "У нас максимальная мощность 800 кВт. Можно менять категорию?"}]))
+
+    def test_closed_ocr_fact_does_not_get_generic_sales_question(self):
+        self.assertIsNone(consultation_plan([
+            {"role": "user", "content": "Распознается ли год производства счетчика?"}]))
 
 
 if __name__ == "__main__":

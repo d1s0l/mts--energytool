@@ -304,6 +304,71 @@ def validate_answer_support(data, evidence, ids, messages):
         raise ValueError("answer_support must cover the entire answer in order")
 
 
+
+def consultation_plan(messages):
+    """Pick a missing input, never a product fact. No LLM or extra API call."""
+    users = [m["content"] for m in messages if m["role"] == "user"]
+    latest = users[-1].lower().replace("ё", "е")
+    context = "\n".join(users).lower().replace("ё", "е")
+
+    def known_or_answered(pattern):
+        if re.search(pattern, context, re.I):
+            return True
+        return False
+
+    def choose(field, question, known_pattern, reason):
+        if known_or_answered(known_pattern):
+            return None
+        # A previous answer (including "don't know") ends this slot's interrogation.
+        for n, message in enumerate(messages[:-1]):
+            if message["role"] == "assistant" and question.casefold() in message["content"].casefold():
+                if any(m["role"] == "user" and m["content"].strip() for m in messages[n+1:]):
+                    return None
+        return {"field": field, "question": question, "reason": reason}
+
+    if "шифер" in latest and re.search(r"стар|возраст|стоит|рассматр", latest):
+        return choose("roof_age", "Сколько лет вашей кровле?",
+            r"(?:крыш|кровл|шифер)[^\n?]{0,35}\d+\s*(?:лет|год)|не знаю[^\n]{0,25}(?:возраст|лет)",
+            "Возраст кровли не сообщён; не делай окончательный вывод об объекте.")
+    if re.search(r"(?:\bсим(?:к|[- ]?карт)|\bsim\b|прибор|счетчик)", latest) and re.search(r"подключ|совместим|менять|замен", latest):
+        return choose("device_models", "Какие у вас модели счётчиков?",
+            r"\b[а-яa-z]{2,}[-]?\d{2,}\b|модел[^\n]{0,20}[:—][^\n]{2,}|не знаю[^\n]{0,25}модел|модел[^\n]{0,25}не знаю",
+            "Поддержка класса устройств не подтверждает конкретные модели.")
+    if "цех" in latest and re.search(r"расход|потреблен|учет|кабинет", latest):
+        return choose("existing_workshop_meters", "У вас уже есть отдельные счётчики по цехам?",
+            r"(?:по цехам|в цехах)[^\n?]{0,45}(?:стоят|есть|установлен)|(?:счетчик|прибор)[^\n?]{0,45}(?:уже|стоят|установлен)",
+            "Уточни существующий учёт; не проектируй схему установки приборов.")
+    if re.search(r"станци|солнеч", context) and "вечер" in context and re.search(r"смысл|выгод|сетев|подход", latest):
+        return choose("daytime_consumption", "Есть ли у объекта потребление днём и насколько оно велико относительно вечернего?",
+            r"(?:днем|дневно[а-я]*)[^\n?]{0,45}(?:\d|потребляем|работаем|почти нет|нет нагрузки)|не знаю[^\n]{0,35}(?:профил|дневн)",
+            "Дневная нагрузка неизвестна: польза сетевой станции только условна, не гарантирована.")
+    if re.search(r"потер|хищен|электросет", context) and re.search(r"хватит|достаточ|данн|начать", latest):
+        return choose("day_night_split", "В суточных данных есть разбивка на дневное и ночное потребление?",
+            r"(?:день|дневн)[^\n?]{0,40}(?:ночь|ночн)|(?:ночь|ночн)[^\n?]{0,40}(?:день|дневн)",
+            "Длительность архива и разбивка день/ночь — независимые требования.")
+    if "арендатор" in context and re.search(r"начать|подключ|автоматиз|оценк", latest):
+        return choose("meter_count", "Сколько примерно счётчиков нужно включить в учёт?",
+            r"(?:\d+|сорок|двадцать|десять|пятьдесят|тридцать)\s*(?:счетчик|прибор)|(?:счетчик|прибор)[^\n?]{0,15}\d+",
+            "Не спрашивай мощность вместо парка приборов. Фото от людей не равно внедрённому OCR.")
+    return None
+
+
+def validate_project_claims(answer, plan):
+    """Block observed unsupported project conclusions before model-based review."""
+    normalized = answer.lower().replace("ё", "е")
+    for sentence in re.split(r"(?<=[.!?])\s+", normalized):
+        if (re.search(r"нуж[ен]|необходимо|долж[а-я]*|требуется", sentence)
+                and re.search(r"кажд[^.!?]{0,25}цех|групп[^.!?]{0,15}цех", sentence)
+                and re.search(r"прибор|счетчик", sentence)):
+            raise ValueError("Do not invent a mandatory meter wiring/layout per workshop; describe the capability and ask about existing meters")
+        if plan and plan["field"] == "daytime_consumption":
+            if re.search(r"смысл есть|станция (?:все равно )?снижает|совпадение[^.!?]{0,40}будет (?:небольш|мал)|экономия будет меньше", sentence):
+                if not re.search(r"если|может|при условии|неизвест|нельзя", sentence):
+                    raise ValueError("Daytime load is unknown: do not assert benefit or its size; explain conditionally")
+    if re.search(r"распознаван[^.!?]{0,100}(?:это уже ваш текущий|у вас уже работает)", normalized):
+        raise ValueError("Receiving photos is not proof of an existing automated OCR service")
+
+
 def append_follow_up(data, messages):
     """Render a separate next question into the actual user-visible reply."""
     answer = data["answer"].strip()
@@ -466,7 +531,9 @@ class EnergyConsultant:
                 continue
             evidence[hit["chunk_id"]] = hit
             used_chars += len(hit["text"])
+        plan = consultation_plan(messages)
         payload = {
+            "consultation_plan": plan,
             "dialog": messages,
             "evidence": [
                 {
@@ -516,7 +583,10 @@ class EnergyConsultant:
                     "unavailable",
                 }:
                     raise ValueError("Invalid answer kind")
+                if plan and data["kind"] in {"product", "clarify"} and data.get("lead") is None:
+                    data["follow_up_question"] = plan["question"]
                 answer = append_follow_up(data, messages)
+                validate_project_claims(data["answer"], plan)
                 validate_device_compatibility(text, answer, data["kind"])
                 if re.search(
                     r"в наших рекомендациях|согласно нашей документации|"
@@ -661,6 +731,8 @@ question_appropriate: вопрос двигает текущую консуль�
 Для достаточности архива потерь проверь отдельно длительность и детализацию данных:
 если наличие день/ночь неизвестно, не утверждай достаточность без этого условия
 и уточни его. Объяснение условия не заменяет вопрос о неизвестном свойстве данных.
+Фотографии, которые клиенту присылают люди, не подтверждают, что у него уже работает
+автоматическое распознавание. Утверждение о внедрённом OCR требует прямого сообщения клиента.
 Если часть ответа недостаточна или неверна, укажи ровно что исправить и подтверждающий
 фрагмент evidence в issues. Не добавляй новых фактов. Не оценивай совпадение формулировок.
 """
