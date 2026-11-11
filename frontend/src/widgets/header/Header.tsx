@@ -5,7 +5,8 @@ import { DebugButton } from "@/features/debug-mode-button/ui/DebugButton";
 export function Header() {
     return(
         <header className={styles.header}>
-            <div>
+            <div className={styles.logo__block}>
+                <img src='/public/favicon.svg' className={styles.logo}/>
                 <h1>Enegytool</h1>
             </div>
 
