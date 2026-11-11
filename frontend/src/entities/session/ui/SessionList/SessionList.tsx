@@ -47,7 +47,7 @@ export function SessionList({ activeSessionId, onSelect, onDeleted }: SessionLis
           className={`${styles.itemWrapper} ${activeSessionId === session.id ? styles.active : ''}`}
         >
           <button type="button" className={styles.item} onClick={() => onSelect(session.id)}>
-            Диалог от {new Date(session.created_at).toLocaleDateString('ru-RU')}
+            <span>Диалог от {new Date(session.created_at).toLocaleDateString('ru-RU')}</span>
           </button>
 
           <button

@@ -12,7 +12,7 @@ Frontend, FastAPI, PostgreSQL и командный модуль RAG. Досту
 docker compose up --build
 ```
 
-- Frontend: http://localhost:8080
+- Frontend: http://localhost:3000
 - Swagger: http://localhost:8000/docs
 - OpenAPI: http://localhost:8000/openapi.json
 
