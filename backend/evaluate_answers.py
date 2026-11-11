@@ -120,6 +120,7 @@ def main():
     parser.add_argument('--questions', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--limit', type=int, default=0)
+    parser.add_argument('--ids', help='Comma-separated input IDs for a targeted rerun; use a new output')
     parser.add_argument('--interval', type=float, default=15,
                         help='Minimum seconds between model calls, including review/repair')
     parser.add_argument('--restart', action='store_true')
@@ -134,6 +135,12 @@ def main():
                 os.environ[key] = value
     client = EvaluationClient(ModelConfig.from_env(), interval=args.interval)
     questions = read_questions(args.questions)
+    if args.ids:
+        chosen = {item.strip() for item in args.ids.split(',') if item.strip()}
+        unknown = chosen - {qid for qid, _ in questions}
+        if not chosen or unknown:
+            parser.error('--ids contains unknown or empty IDs')
+        questions = [(qid, question) for qid, question in questions if qid in chosen]
     if args.limit > 0:
         questions = questions[:args.limit]
     report = {'model': client.config.model, 'semantic_review': not args.baseline,
@@ -142,6 +149,8 @@ def main():
         old = json.loads(args.output.read_text(encoding='utf-8'))
         if old.get('model') != report['model'] or old.get('semantic_review') != report['semantic_review']:
             parser.error('Report belongs to another model/mode; choose a new output or --restart')
+        if any(r['id'] not in {qid for qid, _ in questions} for r in old.get('results', [])):
+            parser.error('Report contains other IDs; choose a new output for a targeted rerun')
         report = old
         delay = report.get('retry_at', 0) - time.time()
         if delay > 0:

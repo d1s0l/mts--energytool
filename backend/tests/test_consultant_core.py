@@ -394,6 +394,15 @@ class GroundingReviewTests(unittest.TestCase):
         self.assertEqual(client.calls, 2)
         self.assertIn("25 000", reply.text)
 
+    def test_production_generation_does_not_need_duplicated_quotes(self):
+        draft = json.loads(output())
+        draft.pop("answer_support")
+        client = Client([json.dumps(draft, ensure_ascii=False), self.verdict()])
+        reply = asyncio.run(EnergyConsultant(client, reviewer=GroundingReviewer(client))(
+            text="Цена?", history=[], search=Search()))
+        self.assertEqual(client.calls, 2)
+        self.assertIn("25 000", reply.text)
+
     def test_factory_enables_review_by_default(self):
         from consultant_impl import create_consultant
         with patch.dict(os.environ, {"LLM_BASE_URL": "http://provider", "LLM_API_KEY": "test-only",
