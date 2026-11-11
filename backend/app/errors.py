@@ -20,7 +20,10 @@ def register_errors(app: FastAPI) -> None:
     async def http_error(request: Request, exc: HTTPException):
         messages = {
             "session_not_found": "Диалог не найден",
-            "session_busy": "В диалоге уже обрабатывается сообщение",
+            "session_busy": "В диалоге уже выполняется операция",
+            "lead_not_found": "Заявка не найдена",
+            "lead_already_exists": "Заявка с другими контактами уже создана",
+            "empty_dialog": "Перед созданием заявки опишите свою задачу в чате",
             "consultant_unavailable": "Консультант временно недоступен",
             "consultant_timeout": "Консультант не ответил вовремя",
         }

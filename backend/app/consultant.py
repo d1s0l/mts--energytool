@@ -38,3 +38,9 @@ class Consultant(Protocol):
     ) -> ConsultantReply:
         """Принять предыдущие реплики и текущий вопрос, вернуть ответ и метаданные."""
         ...
+
+
+class LeadSummarizer(Protocol):
+    async def __call__(self, *, history: list[HistoryMessage]) -> str:
+        """Подготовить резюме заявки только по переданной истории диалога."""
+        ...
