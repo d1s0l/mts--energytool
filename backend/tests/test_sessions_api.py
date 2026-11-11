@@ -140,3 +140,55 @@ def test_send_message_saves_turn_and_rolls_back_on_failure(tmp_path, monkeypatch
                 assert saved["messages"][1:] == [turn["user_message"], turn["assistant_message"]]
 
     asyncio.run(run())
+
+
+def test_delete_session_hides_chat_and_preserves_records(tmp_path, monkeypatch):
+    monkeypatch.setenv("RAG_MODE", "local")
+    (tmp_path / "kb.md").write_text("# Учёт\nУчёт потребления.\n", encoding="utf-8")
+
+    async def run():
+        async with database() as conn:
+            cursor = await conn.execute("SELECT current_schema() AS name")
+            schema = (await cursor.fetchone())["name"]
+            settings = Settings(
+                database_url=make_conninfo(
+                    os.environ["TEST_DATABASE_URL"], options=f"-c search_path={schema}"
+                ),
+                knowledge_base_path=tmp_path,
+            )
+            with TestClient(create_app(settings)) as client:
+                session_id = client.post("/api/sessions").json()["id"]
+                path = f"/api/sessions/{session_id}"
+                await conn.execute(
+                    "INSERT INTO messages (session_id, role, text) VALUES (%s, 'user', 'Вопрос')",
+                    (session_id,),
+                )
+                await conn.execute(
+                    "INSERT INTO leads (session_id, full_name, phone, company, summary) "
+                    "VALUES (%s, 'Тест', '+79990000000', 'Компания', 'Резюме')",
+                    (session_id,),
+                )
+                async with conn.transaction():
+                    await conn.execute(
+                        "SELECT id FROM sessions WHERE id = %s FOR UPDATE", (session_id,)
+                    )
+                    assert client.delete(path).status_code == 409
+                response = client.delete(path)
+                assert response.status_code == 204
+                assert response.content == b""
+                assert client.delete(path).status_code == 204
+                assert client.get("/api/sessions").json()["total"] == 0
+                assert client.get(path).status_code == 404
+                assert client.post(path + "/messages", json={"text": "Вопрос"}).status_code == 404
+                retained = client.get(path + "?include_deleted=true").json()
+                assert retained["deleted_at"]
+                assert retained["messages"][0]["text"] == "Вопрос"
+                assert client.get("/api/sessions?include_deleted=true").json()["total"] == 1
+                cursor = await conn.execute(
+                    "SELECT count(*) AS count FROM leads WHERE session_id = %s", (session_id,)
+                )
+                assert (await cursor.fetchone())["count"] == 1
+                assert client.delete(f"/api/sessions/{uuid4()}").status_code == 404
+                assert client.delete("/api/sessions/not-a-uuid").status_code == 422
+
+    asyncio.run(run())

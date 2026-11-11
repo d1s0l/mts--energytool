@@ -5,7 +5,7 @@ from time import perf_counter
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from psycopg.errors import LockNotAvailable
 from psycopg.types.json import Jsonb
 
@@ -33,26 +33,33 @@ async def list_sessions(
     request: Request,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
+    include_deleted: bool = False,
 ):
     async with request.app.state.db_pool.connection() as conn:
         # Список и total должны отражать один снимок данных.
         await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-        cursor = await conn.execute("SELECT count(*) AS total FROM sessions")
+        cursor = await conn.execute(
+            "SELECT count(*) AS total FROM sessions WHERE (%s OR deleted_at IS NULL)",
+            (include_deleted,),
+        )
         total = (await cursor.fetchone())["total"]
         cursor = await conn.execute(
-            "SELECT id, state, created_at FROM sessions "
+            "SELECT id, state, created_at, deleted_at FROM sessions "
+            "WHERE (%s OR deleted_at IS NULL) "
             "ORDER BY created_at DESC, id LIMIT %s OFFSET %s",
-            (limit, offset),
+            (include_deleted, limit, offset),
         )
         return {"items": await cursor.fetchall(), "total": total, "limit": limit, "offset": offset}
 
 
 @router.get("/{session_id}", response_model=SessionDetailOut)
-async def get_session(session_id: UUID, request: Request):
+async def get_session(session_id: UUID, request: Request, include_deleted: bool = False):
     async with request.app.state.db_pool.connection() as conn:
         await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         cursor = await conn.execute(
-            "SELECT id, state, created_at FROM sessions WHERE id = %s", (session_id,)
+            "SELECT id, state, created_at, deleted_at FROM sessions "
+            "WHERE id = %s AND (%s OR deleted_at IS NULL)",
+            (session_id, include_deleted),
         )
         session = await cursor.fetchone()
         if session is None:
@@ -72,7 +79,8 @@ async def send_message(session_id: UUID, body: SendMessageIn, request: Request):
         # Блокировка действует между процессами и освобождается при commit или rollback.
         try:
             cursor = await conn.execute(
-                "SELECT state FROM sessions WHERE id = %s FOR UPDATE NOWAIT", (session_id,)
+                "SELECT state FROM sessions WHERE id = %s AND deleted_at IS NULL FOR UPDATE NOWAIT",
+                (session_id,),
             )
         except LockNotAvailable as exc:
             raise HTTPException(status_code=409, detail="session_busy") from exc
@@ -121,3 +129,22 @@ async def send_message(session_id: UUID, body: SendMessageIn, request: Request):
             user_message=user_message,
             assistant_message=await cursor.fetchone(),
         )
+
+
+@router.delete("/{session_id}", status_code=204, response_class=Response)
+async def delete_session(session_id: UUID, request: Request):
+    async with request.app.state.db_pool.connection() as conn:
+        try:
+            cursor = await conn.execute(
+                "SELECT id FROM sessions WHERE id = %s FOR UPDATE NOWAIT", (session_id,)
+            )
+        except LockNotAvailable as exc:
+            raise HTTPException(status_code=409, detail="session_busy") from exc
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="session_not_found")
+        await conn.execute(
+            "UPDATE sessions SET deleted_at = COALESCE(deleted_at, clock_timestamp()) "
+            "WHERE id = %s",
+            (session_id,),
+        )
+    return Response(status_code=204)

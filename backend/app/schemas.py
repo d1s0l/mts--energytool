@@ -13,6 +13,7 @@ class SessionOut(BaseModel):
     id: UUID
     state: SessionState
     created_at: datetime
+    deleted_at: datetime | None = None
 
 
 class SessionListOut(BaseModel):

@@ -52,7 +52,7 @@ def test_repeat_migration_preserves_history_and_relations():
                 ("sessions", 2),
                 ("messages", 2),
                 ("leads", 1),
-                ("schema_migrations", 1),
+                ("schema_migrations", len(list(MIGRATIONS_DIR.glob("*.sql")))),
             ):
                 cursor = await conn.execute(
                     sql.SQL("SELECT count(*) AS count FROM {}").format(sql.Identifier(table))

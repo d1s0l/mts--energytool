@@ -136,3 +136,9 @@ POST `/api/sessions/{session_id}/messages` принимает JSON с полем
 Docker backend теперь собирается из корня проекта, чтобы включить `rag/`:
 `docker build -f backend/Dockerfile .`. База подключается read-only bind mount,
 в образ не копируется. Поиск не хранит историю сессий: историю передаёт вызывающий код.
+
+
+Удаление чата выполняет `DELETE /api/sessions/{session_id}` (204).
+Это мягкое удаление с сохранением сообщений и заявок. Список и чтение сессии
+поддерживают `include_deleted=true` для проверки сохранённой истории.
+При старте применяется миграция `002_soft_delete_sessions.sql`.
