@@ -163,10 +163,16 @@ class ConsultantTests(unittest.TestCase):
             self.assertEqual(cfg.base_url, "http://proxy/v1")
 
     def test_gateway_uses_platform_model_and_rejects_truncation(self):
-        cfg = ModelConfig(base_url="http://proxy", api_key="secret", model="platform-model")
+        cfg = ModelConfig(
+            base_url="http://proxy",
+            api_key="secret",
+            model="platform-model",
+            reasoning_effort="low",
+        )
 
         def response(request, timeout):
             self.assertEqual(json.loads(request.data)["model"], "platform-model")
+            self.assertEqual(json.loads(request.data)["reasoning_effort"], "low")
             return io.BytesIO(
                 json.dumps(
                     {"choices": [{"finish_reason": "length", "message": {"content": "partial"}}]}

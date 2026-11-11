@@ -31,7 +31,7 @@ def test_session_capability_and_idempotent_retry(tmp_path, monkeypatch):
 
             async def consultant(*, text, history, search):
                 calls.append(text)
-                if text == "Сбой" and calls.count(text) == 1:
+                if text.startswith("Сбой") and calls.count(text) == 1:
                     raise ConsultantUnavailable()
                 return ConsultantReply(text="Проверенный ответ")
 
@@ -80,6 +80,14 @@ def test_session_capability_and_idempotent_retry(tmp_path, monkeypatch):
                 history = client.get(path, headers=own).json()["messages"]
                 assert len(history) == 4
                 assert all(m["status"] == "completed" for m in history)
+                legacy = {"text": "Сбой без ID"}
+                assert client.post(path + "/messages", json=legacy, headers=own).status_code == 503
+                before = client.get(path, headers=own).json()["messages"]
+                retry = client.post(path + "/messages", json=legacy, headers=own)
+                assert retry.status_code == 200
+                assert retry.json()["user_message"]["id"] == before[-1]["id"]
+                after = client.get(path, headers=own).json()["messages"]
+                assert len(after) == len(before) + 1
                 assert client.delete(path, headers=own).status_code == 204
                 assert client.get(path, headers=own).status_code == 404
                 assert client.get(path + "?include_deleted=true", headers=own).status_code == 200

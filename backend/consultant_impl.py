@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import re
 import time
@@ -13,6 +14,9 @@ try:
     from consultant import ConsultantReply, ConsultantUnavailable
 except ModuleNotFoundError:
     from app.consultant import ConsultantReply, ConsultantUnavailable
+
+
+log = logging.getLogger(__name__)
 
 
 POLICY = """Ты консультант МТС EnergyTool. Отвечай по-русски, понятно, обычно до 150 слов.
@@ -58,6 +62,7 @@ class ModelConfig:
     max_tokens: int = 1600
     timeout: float = 20.0
     max_workers: int = 3
+    reasoning_effort: str = ""
 
     @classmethod
     def from_env(cls):
@@ -72,6 +77,7 @@ class ModelConfig:
             max_tokens=int(setting("MAX_TOKENS") or "1600"),
             timeout=float(setting("LLM_TIMEOUT") or "20"),
             max_workers=int(setting("MAX_WORKERS") or "3"),
+            reasoning_effort=setting("LLM_REASONING_EFFORT"),
         )
         if (
             not config.base_url.startswith(("http://", "https://"))
@@ -87,6 +93,8 @@ class ModelConfig:
             raise ValueError("Invalid model configuration")
         if not 0 <= config.temperature <= 2:
             raise ValueError("Invalid temperature")
+        if config.reasoning_effort not in {"", "low", "medium", "high", "xhigh"}:
+            raise ValueError("Invalid reasoning effort")
         return config
 
 
@@ -97,14 +105,15 @@ class ModelClient:
 
     def _request(self, messages):
         cfg = self.config
-        body = json.dumps(
-            {
-                "model": cfg.model,
-                "messages": messages,
-                "temperature": cfg.temperature,
-                "max_tokens": cfg.max_tokens,
-            }
-        ).encode()
+        payload = {
+            "model": cfg.model,
+            "messages": messages,
+            "temperature": cfg.temperature,
+            "max_tokens": cfg.max_tokens,
+        }
+        if cfg.reasoning_effort:
+            payload["reasoning_effort"] = cfg.reasoning_effort
+        body = json.dumps(payload).encode()
         for attempt in range(2):
             req = urllib.request.Request(
                 cfg.base_url + "/chat/completions",
@@ -131,11 +140,14 @@ class ModelClient:
                 return content
             except urllib.error.HTTPError as exc:
                 if exc.code not in {429, 500, 502, 503, 504} or attempt:
+                    log.warning("Model API request failed (HTTP %s)", exc.code)
                     raise ConsultantUnavailable("Model HTTP error") from None
-            except (urllib.error.URLError, TimeoutError):
+            except (urllib.error.URLError, TimeoutError) as exc:
                 if attempt:
+                    log.warning("Model API request failed (%s)", type(exc).__name__)
                     raise ConsultantUnavailable("Model transport error") from None
             except (ValueError, KeyError, IndexError, TypeError):
+                log.warning("Model API returned invalid or truncated completion")
                 raise ConsultantUnavailable("Invalid model response") from None
             time.sleep(0.25)
         raise ConsultantUnavailable("Model unavailable")
@@ -364,7 +376,9 @@ class EnergyConsultant:
                         for i in dict.fromkeys(ids)
                     ],
                 )
-            except (ValueError, KeyError, TypeError):
+            except (ValueError, KeyError, TypeError) as exc:
+                reason = str(exc) if type(exc) is ValueError else type(exc).__name__
+                log.warning("Consultant output rejected (%s)", reason)
                 if attempt == 0:
                     prompt.append({"role": "assistant", "content": raw[:12000]})
                     prompt.append(

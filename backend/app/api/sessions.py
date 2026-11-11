@@ -98,6 +98,22 @@ async def send_message(session_id: UUID, body: SendMessageIn, request: Request):
         session = await cursor.fetchone()
         if session is None:
             raise HTTPException(404, "session_not_found")
+        if body.client_message_id is None:
+            # Старые клиенты повторяют неудачный ход без идентификатора запроса.
+            cursor = await conn.execute(
+                "SELECT role, text, status, request_id FROM messages "
+                "WHERE session_id = %s ORDER BY position DESC LIMIT 1",
+                (session_id,),
+            )
+            latest = await cursor.fetchone()
+            if (
+                latest
+                and latest["role"] == "user"
+                and latest["status"] == "failed"
+                and latest["text"] == body.text
+                and latest["request_id"] is not None
+            ):
+                request_id = latest["request_id"]
         cursor = await conn.execute(
             "SELECT * FROM messages WHERE session_id = %s AND request_id = %s ORDER BY position",
             (session_id, request_id),
