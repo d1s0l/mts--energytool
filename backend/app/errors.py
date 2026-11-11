@@ -19,6 +19,8 @@ def register_errors(app: FastAPI) -> None:
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException):
         messages = {
+            "access_denied": "Нет доступа к этому диалогу",
+            "request_conflict": "Идентификатор сообщения уже использован для другого текста",
             "session_not_found": "Диалог не найден",
             "session_busy": "В диалоге уже выполняется операция",
             "lead_not_found": "Заявка не найдена",

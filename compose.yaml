@@ -28,6 +28,7 @@ services:
       TEMPERATURE: ${TEMPERATURE:-0}
       MAX_TOKENS: ${MAX_TOKENS:-1600}
       LLM_TIMEOUT: ${LLM_TIMEOUT:-20}
+      API_ACCESS_TOKEN: ${API_ACCESS_TOKEN:-}
       EMB_MODEL: ${EMB_MODEL:-BAAI/bge-m3}
       RERANKER_MODEL: ${RERANKER_MODEL:-}
       DATABASE_URL: postgresql://energytool:${POSTGRES_PASSWORD:-energytool}@postgres:5432/energytool
@@ -47,7 +48,7 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "127.0.0.1:8080:80"
+      - "127.0.0.1:3000:80"
     depends_on:
       backend:
         condition: service_started

@@ -9,7 +9,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.consultant import ConsultantUnavailable
+from rag.rag_search import Config, KnowledgeSearch
+
+from app.consultant import ConsultantReply, ConsultantUnavailable
 from build_submission import build_submission
 from consultant_impl import (
     EnergyConsultant,
@@ -19,6 +21,7 @@ from consultant_impl import (
     selected_summary,
     validated_lead,
 )
+from solution import answer_questions, write_submission
 
 HIT = {
     "chunk_id": "fact",
@@ -174,6 +177,34 @@ class ConsultantTests(unittest.TestCase):
             with self.assertRaises(ConsultantUnavailable):
                 ModelClient(cfg)._request([])
 
+    def test_single_failure_does_not_abort_other_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "kb.md").write_text("# Учет\nУчет склада.")
+            engine = KnowledgeSearch(root, Config(mode="local"))
+
+            async def consultant(*, text, **kwargs):
+                if text == "fail":
+                    raise TimeoutError("secret-never-log")
+                return ConsultantReply(text="Ответ: " + text)
+
+            checkpoints = []
+            answers = asyncio.run(
+                answer_questions(
+                    [("1", "first"), ("2", "fail"), ("3", "last")],
+                    engine,
+                    consultant,
+                    2,
+                    checkpoint=lambda result: checkpoints.append(list(result)),
+                )
+            )
+            self.assertEqual(answers[0], "Ответ: first")
+            self.assertEqual(answers[2], "Ответ: last")
+            self.assertNotIn("secret", answers[1])
+            self.assertEqual(len(checkpoints), 3)
+            write_submission(root / "submission.csv", [("1", "a"), ("2", "b"), ("3", "c")], answers)
+            self.assertTrue((root / "submission.csv").exists())
+
     def test_default_archive_includes_shared_implementation(self):
         from zipfile import ZipFile
 
@@ -237,9 +268,10 @@ def test_default_consultant_connects_to_existing_session_and_lead_api(tmp_path, 
                     os.environ["TEST_DATABASE_URL"], options=f"-c search_path={schema}"
                 ),
                 knowledge_base_path=tmp_path,
+                api_access_token="test-access",
             )
             application = create_app(settings)
-            with TestClient(application) as api:
+            with TestClient(application, headers={"Authorization": "Bearer test-access"}) as api:
                 assert api.get("/api/health").status_code == 200
                 session_id = api.post("/api/sessions").json()["id"]
                 session = f"/api/sessions/{session_id}"

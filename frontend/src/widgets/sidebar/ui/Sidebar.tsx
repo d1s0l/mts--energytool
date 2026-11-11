@@ -7,10 +7,8 @@ interface SidebarProps {
   activeSessionId: string | null;
   width: number;
   isResizing: boolean;
-  onResizePointerDown: (
-    event: React.PointerEvent<HTMLDivElement>,
-  ) => void;
-  onSelectSession: (sessionId: string) => void;
+  onResizePointerDown: (event: React.PointerEvent<HTMLDivElement>) => void;
+  onSelectSession: (sessionId: string | null) => void;
 }
 
 export function Sidebar({
@@ -30,10 +28,7 @@ export function Sidebar({
         <CreateSessionButton onCreated={onSelectSession} />
       </div>
 
-      <section
-        className={styles.history}
-        aria-labelledby="chat-history-title"
-      >
+      <section className={styles.history} aria-labelledby="chat-history-title">
         <h2 className={styles.sectionTitle} id="chat-history-title">
           История диалогов
         </h2>
@@ -41,6 +36,11 @@ export function Sidebar({
         <SessionList
           activeSessionId={activeSessionId}
           onSelect={onSelectSession}
+          onDeleted={(sessionId) => {
+            if (activeSessionId === sessionId) {
+              onSelectSession(null);
+            }
+          }}
         />
       </section>
 

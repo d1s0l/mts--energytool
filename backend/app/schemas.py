@@ -11,6 +11,7 @@ SessionState = Literal["chatting", "awaiting_contacts", "lead_created"]
 
 
 class SessionOut(BaseModel):
+    access_token: str | None = None
     id: UUID
     state: SessionState
     created_at: datetime
@@ -30,6 +31,7 @@ class MessageOut(BaseModel):
     text: str
     created_at: datetime
     debug: dict[str, Any] | None
+    status: Literal["processing", "completed", "failed"] = "completed"
 
 
 class SessionDetailOut(SessionOut):
@@ -37,6 +39,7 @@ class SessionDetailOut(SessionOut):
 
 
 class SendMessageIn(BaseModel):
+    client_message_id: UUID | None = None
     text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50000)]
 
     @field_validator("text")
@@ -52,6 +55,7 @@ class SendMessageOut(BaseModel):
     state: SessionState
     user_message: MessageOut
     assistant_message: MessageOut
+    lead_id: UUID | None = None
 
 
 class LeadIn(BaseModel):

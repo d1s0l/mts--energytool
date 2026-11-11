@@ -1,24 +1,16 @@
 import { baseApi } from '@/app/api/baseApi';
-import type {
-  SendMessageRequest,
-  SendMessageResponse,
-} from '@/entities/send-message/model/types';
+import type { SendMessageRequest, SendMessageResponse } from '@/entities/send-message/model/types';
 
 export const sendMessageApi = baseApi.injectEndpoints({
   endpoints: (builder) => ({
-    sendMessage: builder.mutation<
-      SendMessageResponse,
-      SendMessageRequest
-    >({
-      query: ({ chatId, content }) => ({
-        url: `/chats/${chatId}/messages`, 
+    sendMessage: builder.mutation<SendMessageResponse, SendMessageRequest>({
+      query: ({ sessionId, text }) => ({
+        url: `/sessions/${sessionId}/messages`,
         method: 'POST',
-        body: { content }, 
+        body: { text },
       }),
 
-      invalidatesTags: (_result, _error, { chatId }) => [
-        { type: 'Message', id: chatId },
-      ],
+      invalidatesTags: (_result, _error, { sessionId }) => [{ type: 'Session', id: sessionId }],
     }),
   }),
 });
