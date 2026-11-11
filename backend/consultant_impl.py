@@ -19,7 +19,13 @@ except ModuleNotFoundError:
 log = logging.getLogger(__name__)
 
 
-POLICY = """Ты консультант МТС EnergyTool. Отвечай по-русски, понятно, обычно до 150 слов.
+POLICY = """Ты консультант МТС EnergyTool. Отвечай по-русски, понятно и кратко.
+Обычный ответ: 2–3 коротких предложения, примерно 30–60 слов вместе с уточнением.
+Сначала прямой ответ на последний вопрос, затем только существенное условие или ограничение.
+Развёрнуто отвечай лишь по запросу клиента или когда краткость теряет важные условия.
+Не пересказывай весь продукт, не добавляй рекламные преимущества и смежные функции.
+Не вставляй справочные диапазоны мощности, цены и сроки, если их не спрашивали
+и они не нужны для ответа. Короткий ответ не должен терять важную оговорку.
 Говори по существу, естественным языком. Не оправдывай ответ ссылкой на свои источники:
 не пиши «это прямо указано в наших рекомендациях», «согласно нашей документации»,
 «как сказано в материалах» и подобные служебные фразы. Документы видны в отладке.
@@ -27,16 +33,24 @@ POLICY = """Ты консультант МТС EnergyTool. Отвечай по-�
 станции можно наращивать поэтапно». При отсутствии ответа честно скажи, что не можешь
 подтвердить эту возможность, и предложи специалиста. Не выдавай уверенность за аргумент.
 Факты о продуктах, ценах, сроках, энергетике и законодательстве бери ТОЛЬКО из evidence.
+Это относится и к качественным сравнениям, причинам и пояснениям, а не только к числам.
+Общие знания модели не являются доказательством. Если источник подтверждает возможность
+монтажа, нельзя дописывать сравнительную стоимость или профиль выработки без отдельного
+подтверждения. Не превращай поддержку класса устройств в обещание совместимости любого
+конкретного устройства: сохрани необходимость проверки модели и схемы подключения.
+Если ответ зависит от обследования, проекта, верификации или измерений, назови это условие.
+Не добавляй ограничения других продуктов и не переноси показатели между продуктами.
 Сведения о клиенте бери только из его сообщений; предыдущий ответ бота не источник фактов.
 Сначала ответь на доступную часть вопроса. Если для выбора решения данных недостаточно,
 задай один полезный вопрос. Не повторяй уже отвеченные вопросы. Учитывай исправления,
 разные объекты и возврат к теме. Не смешивай мощность (кВт) и потребление (кВт·ч).
-Веди консультацию дальше: после продуктового ответа выбери один неизвестный параметр,
-который влияет на подбор решения. Сам вопрос верни ОТДЕЛЬНО в follow_up_question,
-а в answer оставь объяснение. Например, для цены учёта уточни количество приборов,
-для солнечной станции — цель или профиль потребления, для оптового рынка — мощность,
-но только если эти сведения ещё не сообщены. Если параметры уже известны, предложи
-следующий шаг одним вопросом. Не спрашивай «Остались вопросы?» вместо квалификации.
+Уточняй только параметр, необходимый для текущего решения, а не для общего опроса.
+Для размещения станции важны регион и условия площадки; для расширения — профиль
+потребления и возможность учесть расширение при проектировании; для совместимости —
+модели приборов и существующая схема. Выбирай один наиболее полезный неизвестный параметр.
+Сам вопрос верни ОТДЕЛЬНО в follow_up_question, а в answer оставь объяснение.
+Если вопрос о конкретной функции полностью закрыт и уточнение ничего не меняет,
+верни follow_up_question=null. Не задавай вопросы ради продолжения разговора.
 При отказе от контактов спрашивай про задачу, а не снова про телефон. При готовой
 заявке, постороннем вопросе или просьбе ответить без вопросов продолжать опрос не нужно.
 Сохраняй все существенные оговорки: ориентир не гарантия, цена не предложение,
@@ -59,11 +73,17 @@ POLICY = """Ты консультант МТС EnergyTool. Отвечай по-�
 Верни только JSON: {"answer":"текст", "state":"chatting или awaiting_contacts",
 "evidence_ids":["ID реально использованного фрагмента"],
 "lead":null или {"full_name":"...","phone":"...","company":"..."}}.
+Для kind=product добавь answer_support: список объектов
+{"text":"предложение ответа", "evidence_id":"ID", "quote":"дословная цитата evidence"}.
+Все text по порядку должны составлять answer без пропусков; уточнение сюда не включай.
+Каждый text должен непосредственно следовать из своей quote, включая все условия.
+Цитата должна подтверждать именно утверждение, а не просто относиться к той же теме.
+Не пиши неподтверждённое предложение: удали его, не подбирай к нему похожую цитату.
 Дополнительные поля: kind — product, clarify, contacts, greeting или unavailable;
 lead_intent_quote — дословная цитата клиента о заявке или передаче контактов;
 lead_facts — до 6 коротких дословных цитат клиента, описывающих актуальную задачу.
 follow_up_question — один короткий вопрос со знаком ? либо null.
-Для kind=product или clarify и при state=awaiting_contacts вопрос обязателен,
+Для kind=clarify и при state=awaiting_contacts вопрос обязателен,
 кроме готовой заявки или прямой просьбы пользователя не задавать вопросы.
 Для продуктового ответа обязательно укажи evidence_ids. Для приветствия или сбора контактов
 они могут быть пустыми. Не включай скрытые рассуждения и служебные данные в answer.
@@ -210,6 +230,39 @@ def numbers(text):
     }
 
 
+def validate_answer_support(data, evidence, ids, messages):
+    """Check coverage and verbatim evidence; entailment still needs model evaluation."""
+    if data.get("kind") != "product":
+        return
+    support = data.get("answer_support")
+    if not isinstance(support, list) or not 1 <= len(support) <= 12:
+        raise ValueError("Product answer requires answer_support for every sentence")
+
+    def plain_quote(value):
+        return " ".join(value.translate(str.maketrans("", "", "*_`")).split())
+
+    user_numbers = numbers("\n".join(m["content"] for m in messages if m["role"] == "user"))
+    parts = []
+    for item in support:
+        if not isinstance(item, dict):
+            raise ValueError("Invalid answer_support item")
+        text, source, quote = item.get("text"), item.get("evidence_id"), item.get("quote")
+        if (
+            not isinstance(text, str) or not text.strip()
+            or not isinstance(source, str) or source not in ids
+            or not isinstance(quote, str) or not quote.strip() or len(quote) > 4000
+        ):
+            raise ValueError("Each answer_support item needs text, a cited ID and a quote")
+        # Markdown emphasis and wrapping do not change a quoted statement.
+        if plain_quote(quote) not in plain_quote(evidence[source]["text"]):
+            raise ValueError("answer_support quote must be verbatim from its cited evidence")
+        if not numbers(text).issubset(numbers(quote) | user_numbers):
+            raise ValueError("answer_support number is absent from its evidence quote")
+        parts.append(text)
+    if " ".join(" ".join(parts).split()) != " ".join(data["answer"].split()):
+        raise ValueError("answer_support must cover the entire answer in order")
+
+
 def append_follow_up(data, messages):
     """Render a separate next question into the actual user-visible reply."""
     answer = data["answer"].strip()
@@ -220,7 +273,7 @@ def append_follow_up(data, messages):
         re.I,
     )
     required = (
-        data.get("kind") in {"product", "clarify"} or data.get("state") == "awaiting_contacts"
+        data.get("kind") == "clarify" or data.get("state") == "awaiting_contacts"
     )
     if stop or data.get("lead") is not None:
         return answer
@@ -242,6 +295,24 @@ def append_follow_up(data, messages):
         if message["role"] == "assistant" and question.casefold() in message["content"].casefold():
             raise ValueError("Repeated follow_up_question: use the existing dialog context")
     return answer if question in answer else answer + "\n\n" + question
+
+
+def validate_device_compatibility(text, answer, kind):
+    """Class-level device support is not confirmation for a particular installation."""
+    if kind != "product":
+        return
+    equipment = re.search(r"прибор|сч[её]тчик|sim|сим[ -]?карт|систем.{0,15}уч[её]та", text, re.I)
+    integration = re.search(r"подключ|совместим|замен|менять", text, re.I)
+    if equipment and integration and not re.search(
+        r"совместим|провер|уточн|зависит|модел|схем|не поддерж|невозмож|не подключ",
+        answer,
+        re.I,
+    ):
+        raise ValueError(
+            "Device integration needs an object-specific compatibility caveat: "
+            "check device models and the existing data collection scheme; "
+            "do not guarantee every device from class-level support"
+        )
 
 
 def contact_intent(quote, messages):
@@ -396,6 +467,7 @@ class EnergyConsultant:
                 }:
                     raise ValueError("Invalid answer kind")
                 answer = append_follow_up(data, messages)
+                validate_device_compatibility(text, answer, data["kind"])
                 if re.search(
                     r"в наших рекомендациях|согласно нашей документации|"
                     r"(?:прямо |явно )?указано в (?:наших |предоставленных )?"
@@ -412,6 +484,7 @@ class EnergyConsultant:
                     raise ValueError("Answer exceeds limit with follow-up")
                 if data["kind"] == "product" and not ids:
                     raise ValueError("Product answer requires evidence")
+                validate_answer_support(data, evidence, ids, messages)
                 # An uncited answer cannot introduce product figures.
                 supported = "\n".join(evidence[i]["text"] for i in ids)
                 supported += "\n" + "\n".join(m["content"] for m in messages if m["role"] == "user")
@@ -454,7 +527,10 @@ class EnergyConsultant:
                                 "Нарушен контракт: "
                                 + str(exc)[:300]
                                 + ". Проверь JSON, источники, дословные контакты и "
-                                "follow_up_question. Исправь ответ без новых фактов. "
+                                "follow_up_question. Для product верни answer_support: "
+                                "все предложения answer по порядку с дословными цитатами "
+                                "из evidence. Удали выводы, которых нет в цитатах, сохрани "
+                                "существенные условия. Исправь ответ без новых фактов. "
                                 "Не спрашивай уже известные параметры."
                             ),
                         }

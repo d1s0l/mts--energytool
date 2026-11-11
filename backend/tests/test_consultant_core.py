@@ -19,6 +19,8 @@ from consultant_impl import (
     ModelConfig,
     contact_intent,
     selected_summary,
+    validate_answer_support,
+    validate_device_compatibility,
     validated_lead,
 )
 from solution import answer_questions, write_submission
@@ -58,6 +60,9 @@ def output(**changes):
         "follow_up_question": "Сколько приборов нужно подключить?",
     }
     data.update(changes)
+    data.setdefault("answer_support", [{
+        "text": data["answer"], "evidence_id": "fact", "quote": HIT["text"],
+    }])
     return json.dumps(data, ensure_ascii=False)
 
 
@@ -77,10 +82,76 @@ class ConsultantTests(unittest.TestCase):
         self.assertEqual(reply.text.count("?"), 1)
 
     def test_missing_follow_up_triggers_targeted_repair(self):
-        client = Client([output(follow_up_question=None), output()])
+        client = Client([output(kind="clarify", follow_up_question=None), output()])
         reply = asyncio.run(EnergyConsultant(client)(text="Цена?", history=[], search=Search()))
         self.assertEqual(client.calls, 2)
         self.assertTrue(reply.text.endswith("?"))
+
+    def test_complete_product_answer_does_not_require_question(self):
+        client = Client([output(follow_up_question=None)])
+        reply = asyncio.run(EnergyConsultant(client)(text="Цена?", history=[], search=Search()))
+        self.assertEqual(client.calls, 1)
+        self.assertNotIn("?", reply.text)
+
+    def test_missing_or_fabricated_evidence_support_is_repaired(self):
+        for support in (None, [], [{"text": "Да.", "evidence_id": "fact",
+                                    "quote": "Неподтверждённая цитата"}]):
+            with self.subTest(support=support):
+                client = Client([output(answer_support=support), output()])
+                asyncio.run(EnergyConsultant(client)(text="Цена?", history=[], search=Search()))
+                self.assertEqual(client.calls, 2)
+
+    def test_uncited_additional_sentence_is_repaired(self):
+        original = output()
+        bad = json.loads(original)
+        bad["answer"] += " Монтаж на фасаде дороже."
+        client = Client([json.dumps(bad, ensure_ascii=False), original])
+        reply = asyncio.run(EnergyConsultant(client)(text="Цена?", history=[], search=Search()))
+        self.assertEqual(client.calls, 2)
+        self.assertNotIn("фасаде", reply.text)
+
+    def test_number_from_another_claim_cannot_support_current_claim(self):
+        client = Client([
+            output(answer_support=[{"text": json.loads(output())["answer"],
+                                    "evidence_id": "fact", "quote": "Итог зависит от проекта."}]),
+            output(),
+        ])
+        asyncio.run(EnergyConsultant(client)(text="Цена?", history=[], search=Search()))
+        self.assertEqual(client.calls, 2)
+
+    def test_user_object_numbers_can_be_repeated_without_kb_claim(self):
+        text = "Для ваших 40 приборов итог зависит от проекта."
+        client = Client([output(
+            answer=text, follow_up_question=None,
+            answer_support=[{"text": text, "evidence_id": "fact",
+                             "quote": "Итог зависит от проекта."}],
+        )])
+        reply = asyncio.run(EnergyConsultant(client)(
+            text="У нас 40 приборов, сколько стоит?", history=[], search=Search(),
+        ))
+        self.assertEqual(reply.text, text)
+
+    def test_evidence_markdown_and_wrapping_do_not_reject_a_verbatim_quote(self):
+        data = json.loads(output())
+        source = {**HIT, "text": "**Ориентир: 25 000 рублей в год.**\nИтог зависит от проекта."}
+        validate_answer_support(data, {"fact": source}, ["fact"], [])
+        data["answer_support"][0]["quote"] = "Итог не зависит от проекта."
+        with self.assertRaises(ValueError):
+            validate_answer_support(data, {"fact": source}, ["fact"], [])
+
+    def test_equipment_integration_requires_compatibility_qualification(self):
+        for question in (
+            "Счётчики с SIM другого оператора надо менять?",
+            "Можно подключить наши старые приборы к платформе?",
+        ):
+            with self.subTest(question=question):
+                with self.assertRaises(ValueError):
+                    validate_device_compatibility(question, "Да, всё подключается.", "product")
+                validate_device_compatibility(
+                    question, "Возможность есть; совместимость проверим по моделям приборов.",
+                    "product",
+                )
+        validate_device_compatibility("Год выпуска счётчика распознаётся?", "Да.", "product")
 
     def test_existing_question_is_not_duplicated(self):
         question = "Сколько приборов нужно подключить?"
@@ -301,6 +372,11 @@ def test_default_consultant_connects_to_existing_session_and_lead_api(tmp_path, 
                 "state": "awaiting_contacts",
                 "lead": None,
                 "evidence_ids": [payload["evidence"][0]["id"]],
+                "answer_support": [{
+                    "text": "Платформа помогает учитывать потребление по складам.",
+                    "evidence_id": payload["evidence"][0]["id"],
+                    "quote": "Платформа помогает учитывать потребление по складам.",
+                }],
                 "follow_up_question": "Сколько складов нужно подключить?",
             },
             ensure_ascii=False,
