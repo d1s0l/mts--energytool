@@ -1,1 +1,178 @@
-"""Адаптер сабмита: реализуем после изучения технического регламента."""
+"""CSV-адаптер платформы. Один индекс RAG, независимая история каждого ID."""
+
+import asyncio
+import csv
+import importlib
+import os
+import re
+import sys
+import tempfile
+from collections import deque
+from pathlib import Path
+
+try:
+    from consultant import Consultant, ConsultantReply, HistoryMessage
+except ModuleNotFoundError as exc:
+    if exc.name != "consultant":
+        raise
+    from app.consultant import Consultant, ConsultantReply, HistoryMessage
+
+try:
+    from rag_search import Config, KnowledgeSearch
+except ModuleNotFoundError as exc:
+    if exc.name != "rag_search":
+        raise
+    from rag.rag_search import Config, KnowledgeSearch
+
+
+def read_questions(path: Path) -> list[tuple[str, str]]:
+    with path.open(encoding="utf-8-sig", newline="") as stream:
+        reader = csv.DictReader(stream)
+        if not {"id", "question"}.issubset(reader.fieldnames or []):
+            raise ValueError("Input CSV must contain id and question")
+        rows = []
+        ids = set()
+        for row in reader:
+            qid = (row.get("id") or "").strip()
+            question = row.get("question") or ""
+            if not qid or qid in ids or not question.strip():
+                raise ValueError("Input contains an empty or duplicate ID, or an empty question")
+            ids.add(qid)
+            rows.append((qid, question))
+        if not rows:
+            raise ValueError("Input CSV contains no questions")
+        return rows
+
+
+def split_dialog(question: str) -> tuple[str, list[HistoryMessage]]:
+    # Демо содержит как реальные переводы строк, так и буквальные \\n перед маркерами.
+    normalized = re.sub(r"\\n(?=\s*(?:Пользователь|Ассистент):)", "\n", question)
+    markers = list(re.finditer(r"(?:^|\n)\s*(Пользователь|Ассистент):\s*", normalized))
+    if not markers or normalized[: markers[0].start()].strip():
+        return question.strip(), []
+    messages: list[HistoryMessage] = []
+    for index, marker in enumerate(markers):
+        end = markers[index + 1].start() if index + 1 < len(markers) else len(normalized)
+        content = normalized[marker.end() : end].strip()
+        if not content:
+            raise ValueError("Dialog contains an empty message")
+        messages.append(
+            {"role": "user" if marker[1] == "Пользователь" else "assistant", "content": content}
+        )
+    if messages[-1]["role"] != "user":
+        raise ValueError("Dialog must end with a user message")
+    return messages[-1]["content"], messages[:-1]
+
+
+class SubmissionSearch:
+    def __init__(self, engine: KnowledgeSearch):
+        self.engine = engine
+
+    async def search(self, question: str, history: list[dict] | None = None) -> dict:
+        return await asyncio.to_thread(self.engine.search, question, history=history)
+
+
+async def answer_questions(
+    questions: list[tuple[str, str]],
+    engine: KnowledgeSearch,
+    consultant: Consultant,
+    max_workers: int,
+) -> list[str]:
+    if not 1 <= max_workers <= 8:
+        raise ValueError("MAX_WORKERS must be between 1 and 8")
+    pending = deque(enumerate(questions))
+    answers = [""] * len(questions)
+    search = SubmissionSearch(engine)
+
+    async def worker():
+        while pending:
+            index, (_, question) = pending.popleft()
+            text, history = split_dialog(question)
+            async with asyncio.timeout(60):
+                reply = ConsultantReply.model_validate(
+                    await consultant(text=text, history=history, search=search)
+                )
+            if len(reply.text) > 10000:
+                raise ValueError("An answer exceeds the platform limit of 10000 characters")
+            answers[index] = reply.text
+
+    tasks = [asyncio.create_task(worker()) for _ in range(min(max_workers, len(questions)))]
+    try:
+        await asyncio.gather(*tasks)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    return answers
+
+
+def write_submission(path: Path, questions: list[tuple[str, str]], answers: list[str]) -> None:
+    if len(questions) != len(answers) or any(not answer.strip() for answer in answers):
+        raise ValueError("Each question must have one nonempty answer")
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", newline="", dir=path.parent, delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            writer = csv.writer(stream)
+            writer.writerow(["id", "answer"])
+            writer.writerows(
+                (qid, answer) for (qid, _), answer in zip(questions, answers, strict=True)
+            )
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def load_consultant() -> Consultant:
+    try:
+        module = importlib.import_module("consultant_impl")
+    except ModuleNotFoundError as exc:
+        if exc.name != "consultant_impl":
+            raise
+        raise RuntimeError(
+            "Add consultant_impl.py with create_consultant() before submitting"
+        ) from exc
+    consultant = module.create_consultant()
+    if not callable(consultant):
+        raise TypeError("create_consultant() must return an async callable")
+    return consultant
+
+
+async def run(consultant: Consultant, data_dir: Path, output: Path, max_workers: int) -> None:
+    if not 1 <= max_workers <= 8:
+        raise ValueError("MAX_WORKERS must be between 1 and 8")
+    questions = read_questions(data_dir / "questions.csv")
+    engine = await asyncio.to_thread(
+        KnowledgeSearch, data_dir / "knowledge-base.zip", Config.from_env()
+    )
+    answers = await answer_questions(questions, engine, consultant, max_workers)
+    write_submission(output, questions, answers)
+
+
+def main() -> int:
+    try:
+        consultant = load_consultant()
+        asyncio.run(
+            run(
+                consultant,
+                Path(os.getenv("DATA_DIR", "data")),
+                Path("submission.csv"),
+                int(os.getenv("MAX_WORKERS", "3")),
+            )
+        )
+    except Exception as exc:
+        # Текст исключения провайдера может содержать ключ или пользовательские данные.
+        print(f"Submission failed ({type(exc).__name__})", file=sys.stderr)
+        if isinstance(exc, ModuleNotFoundError) or (
+            isinstance(exc, RuntimeError) and "consultant_impl.py" in str(exc)
+        ):
+            print("Connect consultant_impl.py exporting create_consultant()", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
