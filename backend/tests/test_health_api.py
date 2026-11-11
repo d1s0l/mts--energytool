@@ -39,13 +39,14 @@ def test_health_checks_database_and_never_calls_models(tmp_path, monkeypatch):
             cursor = await conn.execute("SELECT current_schema() AS name")
             schema = (await cursor.fetchone())["name"]
             settings = Settings(
+                api_access_token="test-access",
                 database_url=make_conninfo(
                     os.environ["TEST_DATABASE_URL"], options=f"-c search_path={schema}"
                 ),
                 knowledge_base_path=tmp_path,
             )
             application = create_app(settings)
-            with TestClient(application) as client:
+            with TestClient(application, headers={"Authorization": "Bearer test-access"}) as client:
                 missing = client.get("/api/health")
                 assert missing.status_code == 503
                 assert missing.json()["checks"]["database"] == "ready"

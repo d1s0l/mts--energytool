@@ -72,6 +72,7 @@ class Config:
 
 
 STOP = set("и в во на с со по для у мы вы я а но или как что это ли нам нас вас ваш наш бы к из от до за при он она они его ее все уже можно нужно есть будет чтобы чем если то не да какой какая какие сколько так же еще только об о их мне тебе свой после без над под через сначала вообще стоит хотим хочу понять кажется примерно три сорок больше всего готовы готов можете сможете".split())
+STOP.difference_update({"сколько", "стоит"})
 SUFFIX = re.compile(r"(иями|ями|ами|ого|ему|ому|ыми|ими|иях|ах|ях|ией|ий|ый|ой|ая|яя|ое|ее|ые|ие|ов|ев|ам|ям|ом|ем|ую|юю|ы|и|а|я|у|ю|е|о)$")
 
 
@@ -118,6 +119,7 @@ for _t in SYNONYMS:
 
 # Query expansions describe intent, never supply answer facts.
 PHRASES = {
+    "сколько стоит": "цена стоимость",
     "что понадобится": "сведения данные количество тип приборов схема сбора",
     "для оценки": "сведения данные объекта конфигурация",
     "с чего начать": "существующие приборы схема сбора данные объекта",
@@ -211,7 +213,7 @@ def _chunks(source, text, cfg):
     sections.append((section_start, len(lines), " / ".join(h for _, h in headings)))
     out = []
     for start, end, section in sections:
-        # Keep short introductions with their child sections, not as empty context.
+        # Short parent sections provide useful context, but never cut a table row.
         first = re.match(r"^(#{1,6})\s", lines[start]) if start < len(lines) else None
         following = re.match(r"^(#{1,6})\s", lines[end]) if end < len(lines) else None
         if first and following and len(following[1]) > len(first[1]) and len("".join(lines[start:end])) < 250:
@@ -223,12 +225,18 @@ def _chunks(source, text, cfg):
                 if len("".join(lines[start:extended+1])) > cfg.chunk_chars:
                     break
                 extended += 1
+            if any(re.match(r"^\s*-{10,}\s*$", line) for line in lines[start:extended]):
+                while extended < len(lines) and not re.match(r"^#{1,6}\s", lines[extended]):
+                    extended += 1
             end = extended
         pos = start
+        # Text tables contain wrapped rows: splitting their paragraphs loses qualifiers.
+        table = any(re.match(r"^\s*-{10,}\s*$", line) for line in lines[start:end])
+        chunk_limit = max(cfg.chunk_chars, min(12000, len("".join(lines[start:end])))) if table else cfg.chunk_chars
         while pos < end:
             stop = pos
             size = 0
-            while stop < end and (size + len(lines[stop]) <= cfg.chunk_chars or stop == pos):
+            while stop < end and (size + len(lines[stop]) <= chunk_limit or stop == pos):
                 size += len(lines[stop])
                 stop += 1
             # Prefer a paragraph boundary, retaining every source line.
@@ -492,10 +500,18 @@ class KnowledgeSearch:
                 break
         hits = [dict(asdict(c), rank=i+1, score=round(fused[idx], 7),
                      lexical_score=round(scores.get(idx, 0), 5)) for i,(idx,c) in enumerate(selected)]
+        selected_ids = {c.chunk_id for _, c in selected}
+        selected_sources = {c.source for _, c in selected}
+        # Return restrictions separately so they cannot be displaced by top-k ranking.
+        guards = [asdict(c) for c in self.chunks
+                  if c.source in selected_sources and c.chunk_id not in selected_ids
+                  and any(label in c.section.lower() for label in
+                          ("чего утверждать нельзя", "что мы не делаем", "область применения"))]
         timing["selection_ms"] = round((time.perf_counter()-stage)*1000, 3)
         timing["total_ms"] = round((time.perf_counter()-started)*1000, 3)
         return {"schema_version": 1, "query": question,
                 "hits": hits, "sources": list(dict.fromkeys(h["source"] for h in hits)),
+                "guardrails": guards,
                 "search_ms": timing["total_ms"], "timing_ms": timing,
                 "mode": mode, "reranked": reranked, "warnings": warnings,
                 "needs_review": not hits,

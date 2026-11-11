@@ -25,13 +25,14 @@ def test_sessions_persist_and_history_is_isolated(tmp_path, monkeypatch):
             cursor = await conn.execute("SELECT current_schema() AS name")
             schema = (await cursor.fetchone())["name"]
             settings = Settings(
+                api_access_token="test-access",
                 database_url=make_conninfo(
                     os.environ["TEST_DATABASE_URL"], options=f"-c search_path={schema}"
                 ),
                 knowledge_base_path=tmp_path,
             )
             application = create_app(settings)
-            with TestClient(application) as client:
+            with TestClient(application, headers={"Authorization": "Bearer test-access"}) as client:
                 assert application.state.search.engine.info["documents"] == 1
                 assert client.get("/api/sessions").json()["total"] == 0
                 response = client.post("/api/sessions")
@@ -65,7 +66,7 @@ def test_sessions_persist_and_history_is_isolated(tmp_path, monkeypatch):
                     assert invalid.status_code == 422
                     assert invalid.json()["error"]["code"] == "validation_error"
             # Новый запуск приложения не теряет сессии и историю.
-            with TestClient(create_app(settings)) as client:
+            with TestClient(create_app(settings), headers={"Authorization": "Bearer test-access"}) as client:
                 assert client.get("/api/sessions").json()["total"] == 2
                 assert len(client.get(f"/api/sessions/{first['id']}").json()["messages"]) == 2
 
@@ -90,13 +91,14 @@ def test_send_message_saves_turn_and_rolls_back_on_failure(tmp_path, monkeypatch
                 "name"
             ]
             settings = Settings(
+                api_access_token="test-access",
                 database_url=make_conninfo(
                     os.environ["TEST_DATABASE_URL"], options=f"-c search_path={schema}"
                 ),
                 knowledge_base_path=tmp_path,
             )
             application = create_app(settings)
-            with TestClient(application) as client:
+            with TestClient(application, headers={"Authorization": "Bearer test-access"}) as client:
                 session_id = client.post("/api/sessions").json()["id"]
                 detail = f"/api/sessions/{session_id}"
                 path = f"{detail}/messages"
@@ -110,7 +112,7 @@ def test_send_message_saves_turn_and_rolls_back_on_failure(tmp_path, monkeypatch
                 missing = client.post(path, json={"text": "Вопрос"})
                 assert missing.status_code == 503
                 assert missing.json()["error"]["code"] == "consultant_unavailable"
-                assert client.get(detail).json()["messages"] == []
+                assert client.get(detail).json()["messages"][0]["status"] == "failed"
 
                 await conn.execute(
                     "INSERT INTO messages (session_id, role, text) VALUES (%s, 'user', %s)",
@@ -126,7 +128,7 @@ def test_send_message_saves_turn_and_rolls_back_on_failure(tmp_path, monkeypatch
                 assert timed_out.status_code == 504
                 before = client.get(detail).json()
                 assert before["state"] == "chatting"
-                assert len(before["messages"]) == 1
+                assert len(before["messages"]) == 3
 
                 response = client.post(path, json={"text": "  Новый вопрос  "})
                 assert response.status_code == 200
@@ -137,7 +139,7 @@ def test_send_message_saves_turn_and_rolls_back_on_failure(tmp_path, monkeypatch
                 assert turn["assistant_message"]["debug"]["generation_ms"] == 25
                 saved = client.get(detail).json()
                 assert saved["state"] == turn["state"]
-                assert saved["messages"][1:] == [turn["user_message"], turn["assistant_message"]]
+                assert saved["messages"][-2:] == [turn["user_message"], turn["assistant_message"]]
 
     asyncio.run(run())
 
@@ -151,12 +153,13 @@ def test_delete_session_hides_chat_and_preserves_records(tmp_path, monkeypatch):
             cursor = await conn.execute("SELECT current_schema() AS name")
             schema = (await cursor.fetchone())["name"]
             settings = Settings(
+                api_access_token="test-access",
                 database_url=make_conninfo(
                     os.environ["TEST_DATABASE_URL"], options=f"-c search_path={schema}"
                 ),
                 knowledge_base_path=tmp_path,
             )
-            with TestClient(create_app(settings)) as client:
+            with TestClient(create_app(settings), headers={"Authorization": "Bearer test-access"}) as client:
                 session_id = client.post("/api/sessions").json()["id"]
                 path = f"/api/sessions/{session_id}"
                 await conn.execute(

@@ -24,6 +24,8 @@ services:
       MAX_WORKERS: ${MAX_WORKERS:-3}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      API_ACCESS_TOKEN: ${API_ACCESS_TOKEN:-}
       EMB_MODEL: ${EMB_MODEL:-BAAI/bge-m3}
       RERANKER_MODEL: ${RERANKER_MODEL:-}
       DATABASE_URL: postgresql://energytool:${POSTGRES_PASSWORD:-energytool}@postgres:5432/energytool
