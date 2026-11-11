@@ -9,6 +9,7 @@ from psycopg.errors import LockNotAvailable
 from app.access import require_access
 from app.consultant import ConsultantUnavailable
 from app.schemas import LeadIn, LeadOut
+from app.lead_actions import create_lead as persist_lead, record_contact_memory
 
 router = APIRouter(prefix="/api/sessions", tags=["leads"], dependencies=[Depends(require_access)])
 
@@ -61,13 +62,18 @@ async def create_lead(session_id: UUID, body: LeadIn, request: Request, response
         existing = await cursor.fetchone()
         if existing is not None:
             if request.method == "PUT":
+                if all(existing[field] == value for field, value in body.model_dump().items()):
+                    response.status_code = 200
+                    return LeadOut.model_validate(existing)
                 cursor = await conn.execute(
                     "UPDATE leads SET full_name = %s, phone = %s, company = %s "
                     "WHERE id = %s RETURNING *",
                     (body.full_name, body.phone, body.company, existing["id"]),
                 )
+                corrected = LeadOut.model_validate(await cursor.fetchone())
+                await record_contact_memory(conn, session_id=session_id, contacts=body)
                 response.status_code = 200
-                return LeadOut.model_validate(await cursor.fetchone())
+                return corrected
             if any(existing[field] != value for field, value in body.model_dump().items()):
                 raise HTTPException(status_code=409, detail="lead_already_exists")
             response.status_code = 200
@@ -126,11 +132,9 @@ async def create_lead(session_id: UUID, body: LeadIn, request: Request, response
         )
         if await cursor.fetchone() is None:
             raise HTTPException(409, "session_busy")
-        cursor = await conn.execute(
-            "INSERT INTO leads (session_id, full_name, phone, company, summary, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, clock_timestamp()) RETURNING *",
-            (session_id, body.full_name, body.phone, body.company, summary.strip()),
-        )
+        lead_id = await persist_lead(conn, session_id=session_id, contacts=body, summary=summary)
+        await record_contact_memory(conn, session_id=session_id, contacts=body)
+        cursor = await conn.execute("SELECT * FROM leads WHERE id = %s", (lead_id,))
         lead = LeadOut.model_validate(await cursor.fetchone())
         await conn.execute(
             "UPDATE sessions SET state = 'lead_created', processing_token = NULL, "

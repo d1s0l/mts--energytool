@@ -93,3 +93,63 @@ def test_session_capability_and_idempotent_retry(tmp_path, monkeypatch):
                 assert client.get(path + "?include_deleted=true", headers=own).status_code == 200
 
     asyncio.run(run())
+
+
+def test_structured_memory_and_create_lead_action_are_committed_together(tmp_path, monkeypatch):
+    import json
+    from consultant_impl import EnergyConsultant
+    monkeypatch.setenv('RAG_MODE', 'local')
+    (tmp_path / 'kb.md').write_text('# Учёт\nПлатформа учитывает потребление.')
+
+    class Client:
+        payloads = []
+        async def complete(self, messages):
+            payload = json.loads(messages[-1]['content'])
+            self.payloads.append(payload)
+            current = payload['dialog'][-1]
+            text, mid = current['content'], current['message_id']
+            if 'Меня зовут' in text:
+                field, value, question = 'full_name', 'Тест Тестов', 'Как называется компания?'
+            elif 'Компания' in text:
+                field, value, question = 'company', 'ТестКомпания', 'Какой телефон оставить для связи?'
+            else:
+                field, value, question = 'phone', '+79990000000', None
+            updates = [{'field':field,'value':value,'quote':value,'scope':'client',
+                        'status':'provided','source_message_id':mid}]
+            lead = None if field != 'phone' else {
+                'full_name':'Тест Тестов','company':'ТестКомпания','phone':value}
+            return json.dumps(dict(answer='Спасибо, данные приняты.', kind='contacts',
+                state='chatting' if lead else 'awaiting_contacts', evidence_ids=[],
+                follow_up_question=question, memory_updates=updates, lead=lead,
+                action='create_lead' if lead else 'none', lead_intent_quote='Оформите заявку.',
+                lead_facts=['Меня зовут Тест Тестов','Компания ТестКомпания']),ensure_ascii=False)
+
+    async def run():
+        async with database() as conn:
+            schema = (await (await conn.execute('SELECT current_schema() AS name')).fetchone())['name']
+            settings = Settings(database_url=make_conninfo(os.environ['TEST_DATABASE_URL'],
+                options=f'-c search_path={schema}'), knowledge_base_path=tmp_path, api_access_token='test-access')
+            model = Client()
+            with TestClient(create_app(settings,consultant=EnergyConsultant(model)),
+                            headers={'Authorization':'Bearer test-access'}) as client:
+                session = client.post('/api/sessions').json()['id']
+                path = f'/api/sessions/{session}/messages'
+                assert client.post(path,json={'text':'Меня зовут Тест Тестов'}).status_code == 200
+                assert client.post(path,json={'text':'Компания ТестКомпания'}).status_code == 200
+                assert any(f['field']=='full_name' for f in model.payloads[1]['dialog_memory']['facts'])
+                request = {'text':'Оформите заявку. Телефон +79990000000.', 'client_message_id':str(uuid4())}
+                result = client.post(path,json=request)
+                assert result.status_code == 200
+                assert result.json()['lead_id']
+                assert 'Заявка сохранена' in result.json()['assistant_message']['text']
+                assert client.post(path,json=request).json() == result.json()
+                state = await (await conn.execute('SELECT dialog_memory, dialog_revision FROM sessions WHERE id=%s',
+                                                 (session,))).fetchone()
+                assert state['dialog_revision'] == 3
+                assert {f['field'] for f in state['dialog_memory']['facts']} >= {'full_name','phone','company'}
+                count = await (await conn.execute('SELECT count(*) AS n FROM leads WHERE session_id=%s',(session,))).fetchone()
+                assert count['n'] == 1
+                other = client.post('/api/sessions').json()['id']
+                fresh = await (await conn.execute('SELECT dialog_memory FROM sessions WHERE id=%s',(other,))).fetchone()
+                assert fresh['dialog_memory']['facts'] == []
+    asyncio.run(run())

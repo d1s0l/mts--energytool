@@ -30,6 +30,8 @@ class ConsultantReply(BaseModel):
     sources: list[DebugSource] = Field(default_factory=list)
     lead: dict[str, str] | None = None
     lead_summary: str | None = None
+    dialog_memory: dict | None = None
+    requested_action: Literal["none", "create_lead"] = "none"
 
 
 class ConsultantUnavailable(Exception):

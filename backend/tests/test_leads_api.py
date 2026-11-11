@@ -97,7 +97,7 @@ def test_lead_creation_retry_errors_and_retention(tmp_path, monkeypatch):
                     "SELECT count(*) AS count FROM leads WHERE session_id = %s", (session_id,)
                 )
                 assert (await cursor.fetchone())["count"] == 1
-                assert len(client.get(session).json()["messages"]) == 1
+                assert len(client.get(session).json()["messages"]) == 3
                 assert client.delete(session).status_code == 204
                 assert client.get(path).status_code == 404
                 assert client.post(path, json=contacts).status_code == 404

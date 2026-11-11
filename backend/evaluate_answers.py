@@ -77,7 +77,7 @@ def evaluate(questions, consultant, client, search, report, output):
                 text, history = split_dialog(question)
                 reply = asyncio.run(consultant(text=text, history=history, search=search))
                 row.update(answer=reply.text, state=reply.state, lead=reply.lead,
-                           summary=reply.lead_summary, sources=[s.model_dump() for s in reply.sources],
+                           summary=reply.lead_summary, dialog_memory=reply.dialog_memory, action=reply.requested_action, sources=[s.model_dump() for s in reply.sources],
                            word_count=len(reply.text.split()), status='answered')
                 failures = 0
             except ModelRateLimited as exc:

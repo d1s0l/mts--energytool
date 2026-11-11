@@ -12,8 +12,8 @@ from psycopg.types.json import Jsonb
 
 from app.access import require_access, token_hash
 from app.consultant import ConsultantReply, ConsultantUnavailable, ModelRateLimited
+from app.lead_actions import create_lead
 from app.schemas import (
-    LeadIn,
     SendMessageIn,
     SendMessageOut,
     SessionDetailOut,
@@ -65,7 +65,7 @@ async def get_session(session_id: UUID, request: Request, include_deleted: bool 
     async with request.app.state.db_pool.connection() as conn:
         await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         cursor = await conn.execute(
-            "SELECT id, state, created_at, deleted_at FROM sessions "
+            "SELECT id, state, created_at, deleted_at, dialog_memory FROM sessions "
             "WHERE id = %s AND (%s OR deleted_at IS NULL)",
             (session_id, include_deleted),
         )
@@ -150,18 +150,23 @@ async def send_message(session_id: UUID, body: SendMessageIn, request: Request):
             )
         user_message = await cursor.fetchone()
         cursor = await conn.execute(
-            "SELECT role, text AS content FROM messages WHERE session_id = %s "
+            "SELECT id::text AS message_id, role, text AS content FROM messages WHERE session_id = %s "
             "AND status = 'completed' ORDER BY position",
             (session_id,),
         )
         history = await cursor.fetchall()
+        if not getattr(request.app.state.consultant, "uses_dialog_memory", False):
+            history = [{"role": m["role"], "content": m["content"]} for m in history]
     try:
         consultant = request.app.state.consultant
         if consultant is None:
             raise ConsultantUnavailable()
         async with asyncio.timeout(60):
+            memory_args = {}
+            if getattr(consultant, "uses_dialog_memory", False):
+                memory_args = {"memory": session["dialog_memory"], "message_id": str(user_message["id"])}
             reply = await consultant(
-                text=body.text, history=history, search=request.app.state.search
+                text=body.text, history=history, search=request.app.state.search, **memory_args
             )
         # Apply schema validation even to third-party implementations.
         reply = ConsultantReply.model_validate(reply)
@@ -175,41 +180,13 @@ async def send_message(session_id: UUID, body: SendMessageIn, request: Request):
             if current is None:
                 raise HTTPException(409, "session_busy")
             lead_id = None
-            if reply.lead is not None:
-                contacts = LeadIn.model_validate(reply.lead)
-                if not reply.lead_summary or not reply.lead_summary.strip():
+            if reply.lead is not None and reply.requested_action != "create_lead":
+                raise ConsultantUnavailable()
+            if reply.requested_action == "create_lead":
+                if reply.lead is None:
                     raise ConsultantUnavailable()
-                cursor = await conn.execute(
-                    "SELECT id FROM leads WHERE session_id = %s ORDER BY created_at DESC LIMIT 1",
-                    (session_id,),
-                )
-                existing = await cursor.fetchone()
-                if existing:
-                    lead_id = existing["id"]
-                    await conn.execute(
-                        "UPDATE leads SET full_name = %s, phone = %s, company = %s, summary = %s "
-                        "WHERE id = %s",
-                        (
-                            contacts.full_name,
-                            contacts.phone,
-                            contacts.company,
-                            reply.lead_summary,
-                            lead_id,
-                        ),
-                    )
-                else:
-                    cursor = await conn.execute(
-                        "INSERT INTO leads(session_id, full_name, phone, company, summary) "
-                        "VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                        (
-                            session_id,
-                            contacts.full_name,
-                            contacts.phone,
-                            contacts.company,
-                            reply.lead_summary,
-                        ),
-                    )
-                    lead_id = (await cursor.fetchone())["id"]
+                lead_id = await create_lead(conn, session_id=session_id,
+                                            contacts=reply.lead, summary=reply.lead_summary)
                 reply.text += "\n\nЗаявка сохранена в прототипе."
             state = "lead_created" if lead_id or current["state"] == "lead_created" else reply.state
             debug = {
@@ -228,11 +205,18 @@ async def send_message(session_id: UUID, body: SendMessageIn, request: Request):
             await conn.execute(
                 "UPDATE messages SET status = 'completed' WHERE id = %s", (user_message["id"],)
             )
-            await conn.execute(
+            updated_memory = reply.dialog_memory if reply.dialog_memory is not None else session["dialog_memory"]
+            if lead_id is not None:
+                updated_memory["lead"] = {"id": str(lead_id), "status": "saved"}
+            cursor = await conn.execute(
                 "UPDATE sessions SET state = %s, processing_token = NULL, "
-                "processing_started_at = NULL WHERE id = %s",
-                (state, session_id),
+                "processing_started_at = NULL, dialog_memory = %s, dialog_revision = dialog_revision + 1 "
+                "WHERE id = %s AND dialog_revision = %s RETURNING id",
+                (state, Jsonb(updated_memory),
+                 session_id, session["dialog_revision"]),
             )
+            if await cursor.fetchone() is None:
+                raise HTTPException(409, "session_busy")
             user_message["status"] = "completed"
             return SendMessageOut(
                 session_id=session_id,
