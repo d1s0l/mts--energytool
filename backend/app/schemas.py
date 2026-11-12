@@ -42,6 +42,17 @@ class SessionDetailOut(SessionOut):
     messages: list[MessageOut]
 
 
+class MessageDebugOut(BaseModel):
+    message_id: UUID
+    created_at: datetime
+    debug: dict[str, Any] | None
+
+
+class SessionDebugOut(BaseModel):
+    session_id: UUID
+    items: list[MessageDebugOut]
+
+
 class SendMessageIn(BaseModel):
     client_message_id: UUID | None = None
     text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50000)]

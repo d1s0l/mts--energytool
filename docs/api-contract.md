@@ -16,6 +16,7 @@ Bearer-токена. Сообщения принимают `client_message_id` �
 | DELETE | `/api/sessions/{session_id}` | Удалить чат из списка |
 | GET | `/api/sessions` | Список сессий |
 | GET | `/api/sessions/{session_id}` | История и состояние сессии |
+| GET | `/api/sessions/{session_id}/debug` | Сохранённые метаданные ответов ассистента |
 | POST | `/api/sessions/{session_id}/messages` | Отправить сообщение и получить ответ |
 | POST | `/api/sessions/{session_id}/lead` | Передать контакты и создать заявку |
 | GET | `/api/sessions/{session_id}/lead` | Получить заявку |
@@ -64,6 +65,16 @@ Bearer-токена. Сообщения принимают `client_message_id` �
 }
 ```
 
+
+## Данные для Debug Mode
+
+`GET /api/sessions/{session_id}/debug` возвращает `session_id` и массив `items`.
+Каждый элемент содержит `message_id`, `created_at` и сохранённый объект `debug`
+ответа ассистента (время поиска, генерации, общее время и `sources`).
+Порядок совпадает с историей. Для пустого чата `items: []`; у старых сообщений
+без метаданных `debug: null`. Поиск и модель повторно не вызываются.
+Доступ: `X-Session-Token` владельца или служебный Bearer-токен.
+Удалённая сессия возвращает 404; для её просмотра доступен `include_deleted=true`.
 
 ## История сессии
 

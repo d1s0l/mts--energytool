@@ -47,6 +47,17 @@ def test_session_capability_and_idempotent_retry(tmp_path, monkeypatch):
                 other = client.post("/api/sessions").json()
                 path = f"/api/sessions/{first['id']}"
                 own = {"X-Session-Token": first["access_token"]}
+                assert client.get(path + "/debug").status_code == 403
+                assert (
+                    client.get(
+                        path + "/debug", headers={"X-Session-Token": other["access_token"]}
+                    ).status_code
+                    == 403
+                )
+                assert client.get(path + "/debug", headers=own).json() == {
+                    "session_id": first["id"],
+                    "items": [],
+                }
                 assert client.get(path).status_code == 403
                 assert (
                     client.get(path, headers={"X-Session-Token": other["access_token"]}).status_code
@@ -64,6 +75,16 @@ def test_session_capability_and_idempotent_retry(tmp_path, monkeypatch):
                 repeated = client.post(path + "/messages", json=request, headers=own)
                 assert initial.status_code == repeated.status_code == 200
                 assert initial.json() == repeated.json()
+                assert calls == ["Вопрос"]
+                debug_response = client.get(path + "/debug", headers=own)
+                assert debug_response.status_code == 200
+                assert debug_response.json()["items"] == [
+                    {
+                        "message_id": initial.json()["assistant_message"]["id"],
+                        "created_at": initial.json()["assistant_message"]["created_at"],
+                        "debug": initial.json()["assistant_message"]["debug"],
+                    }
+                ]
                 assert calls == ["Вопрос"]
                 assert (
                     client.post(
@@ -90,6 +111,17 @@ def test_session_capability_and_idempotent_retry(tmp_path, monkeypatch):
                 assert len(after) == len(before) + 1
                 assert client.delete(path, headers=own).status_code == 204
                 assert client.get(path, headers=own).status_code == 404
+                assert client.get(path + "/debug", headers=own).status_code == 404
+                assert (
+                    client.get(path + "/debug?include_deleted=true", headers=own).status_code == 200
+                )
+                assert (
+                    client.get(
+                        f"/api/sessions/{uuid4()}/debug",
+                        headers={"Authorization": "Bearer reviewer-secret"},
+                    ).status_code
+                    == 404
+                )
                 assert client.get(path + "?include_deleted=true", headers=own).status_code == 200
 
     asyncio.run(run())

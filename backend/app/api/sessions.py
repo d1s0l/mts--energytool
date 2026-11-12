@@ -16,6 +16,7 @@ from app.schemas import (
     LeadIn,
     SendMessageIn,
     SendMessageOut,
+    SessionDebugOut,
     SessionDetailOut,
     SessionListOut,
     SessionOut,
@@ -80,6 +81,25 @@ async def get_session(session_id: UUID, request: Request, include_deleted: bool 
             (session_id,),
         )
         return {**session, "messages": await cursor.fetchall()}
+
+
+@router.get("/{session_id}/debug", response_model=SessionDebugOut)
+async def get_session_debug(session_id: UUID, request: Request, include_deleted: bool = False):
+    """Сохранённые метаданные ответов; не запускает поиск или генерацию."""
+    async with request.app.state.db_pool.connection() as conn:
+        await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        cursor = await conn.execute(
+            "SELECT id FROM sessions WHERE id = %s AND (%s OR deleted_at IS NULL)",
+            (session_id, include_deleted),
+        )
+        if await cursor.fetchone() is None:
+            raise HTTPException(404, "session_not_found")
+        cursor = await conn.execute(
+            "SELECT id AS message_id, created_at, debug FROM messages "
+            "WHERE session_id = %s AND role = 'assistant' ORDER BY position",
+            (session_id,),
+        )
+        return {"session_id": session_id, "items": await cursor.fetchall()}
 
 
 @router.post("/{session_id}/messages", response_model=SendMessageOut)
