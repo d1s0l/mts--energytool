@@ -19,6 +19,11 @@
     background: var(--mts-red-soft);
     border-color: var(--mts-red-soft);
   }
+
+  &:hover{
+    background: var(--mts-red-soft);
+    border-color: var(--mts-red-soft);
+  }
 }
 
 .item {
@@ -43,10 +48,6 @@
     white-space: nowrap;
   }
 
-  &:hover {
-    color: var(--mts-ink);
-    background: var(--mts-surface-muted);
-  }
 
   &:focus-visible {
     outline: 2px solid var(--mts-red);

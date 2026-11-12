@@ -1,5 +1,5 @@
 .layout {
-  min-height: 100vh;
+  height: 100vh;
   display: flex;
   flex-direction: column;
 }
@@ -13,6 +13,8 @@
 .main {
   flex: 1;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   background: var(--mts-surface-muted);
   padding: 20px 40px;
 }

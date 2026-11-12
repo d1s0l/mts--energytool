@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { useOutletContext } from 'react-router';
+import { ArrowDown } from 'lucide-react';
 
 import { ThinkingLoader } from '@/entities/message/ui/ThinkingLoader/ThinkingLoader';
 import { SendMessage } from '@/features/send-message/ui/SendMessage';
@@ -25,6 +26,15 @@ export function ChatPage() {
 
   const [isChatStarted, setIsChatStarted] = useState(false);
   const [localMessage, setLocalMessage] = useState<LocalMessage | null>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollRef = useRef(true);
+  const isScrollingToBottomRef = useRef(false);
+  const isAtBottomRef = useRef(true);
+  const [scrollState, setScrollState] = useState({
+    sessionId: activeSessionId,
+    isAtBottom: true,
+  });
+  const isAtBottom = scrollState.sessionId !== activeSessionId || scrollState.isAtBottom;
 
   const { sendMessage, isLoading } = useSendMessage({
     activeSessionId,
@@ -34,6 +44,58 @@ export function ChatPage() {
   const { data: chat, isLoading: isHistoryLoading } = useGetChatQuery(activeSessionId ?? '', {
     skip: !activeSessionId,
   });
+
+  useLayoutEffect(() => {
+    shouldAutoScrollRef.current = true;
+    isScrollingToBottomRef.current = false;
+    isAtBottomRef.current = true;
+
+    const messages = messagesRef.current;
+
+    if (messages) {
+      messages.scrollTop = messages.scrollHeight;
+    }
+  }, [activeSessionId]);
+
+  useLayoutEffect(() => {
+    const messages = messagesRef.current;
+
+    if (!messages || !shouldAutoScrollRef.current) return;
+    messages.scrollTop = messages.scrollHeight;
+    isAtBottomRef.current = true;
+    isAtBottomRef.current = true;
+  }, [chat, localMessage?.id, localMessage?.status, localMessage?.assistantText]);
+
+  const handleMessagesScroll = () => {
+    const messages = messagesRef.current;
+
+    if (!messages) return;
+
+    const atBottom =
+      messages.scrollHeight - messages.scrollTop - messages.clientHeight <= 32;
+
+    if (atBottom) {
+      shouldAutoScrollRef.current = true;
+      isScrollingToBottomRef.current = false;
+    } else if (!isScrollingToBottomRef.current) {
+      shouldAutoScrollRef.current = false;
+    }
+
+    if (isAtBottomRef.current !== atBottom) {
+      isAtBottomRef.current = atBottom;
+      setScrollState({ sessionId: activeSessionId, isAtBottom: atBottom });
+    }
+  };
+
+  const handleScrollToBottom = () => {
+    const messages = messagesRef.current;
+
+    if (!messages) return;
+
+    shouldAutoScrollRef.current = true;
+    isScrollingToBottomRef.current = true;
+    messages.scrollTo({ top: messages.scrollHeight, behavior: 'smooth' });
+  };
 
   const handleSend = async (text: string) => {
     setIsChatStarted(true);
@@ -90,42 +152,60 @@ export function ChatPage() {
       )}
 
       {hasChatStarted && (
-        <div className={styles.messages}>
-          {isHistoryLoading && <p>Загружаем историю...</p>}
+        <div className={styles.messagesContainer}>
+          <div
+            ref={messagesRef}
+            className={styles.messages}
+            onScroll={handleMessagesScroll}
+          >
+            {isHistoryLoading && <p>Загружаем историю...</p>}
 
-          {chat?.messages.map((message) => (
-            <div
-              key={message.id}
-              className={message.role === 'user' ? styles.userMessage : styles.assistantMessage}
+            {chat?.messages.map((message) => (
+              <div
+                key={message.id}
+                className={message.role === 'user' ? styles.userMessage : styles.assistantMessage}
+              >
+                {message.text}
+              </div>
+            ))}
+
+            {localMessage && !isLocalMessageInHistory && (
+              <>
+                <div className={styles.userMessage}>{localMessage.text}</div>
+
+                {localMessage.status === 'sending' && (
+                  <div className={styles.assistantMessage}>
+                    <ThinkingLoader />
+                  </div>
+                )}
+
+                {localMessage.status === 'sent' && (
+                  <div className={styles.assistantMessage}>{localMessage.assistantText}</div>
+                )}
+
+                {localMessage.status === 'failed' && (
+                  <div className={styles.assistantMessage}>
+                    <p>Не удалось отправить сообщение. Попробуйте ещё раз.</p>
+
+                    <button type="button" onClick={handleRetry} className={styles.retryButton}>
+                      Повторить
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          {!isAtBottom && (
+            <button
+              type="button"
+              className={styles.scrollToBottom}
+              onClick={handleScrollToBottom}
+              aria-label="Прокрутить к последнему сообщению"
+              title="Прокрутить вниз"
             >
-              {message.text}
-            </div>
-          ))}
-
-          {localMessage && !isLocalMessageInHistory && (
-            <>
-              <div className={styles.userMessage}>{localMessage.text}</div>
-
-              {localMessage.status === 'sending' && (
-                <div className={styles.assistantMessage}>
-                  <ThinkingLoader />
-                </div>
-              )}
-
-              {localMessage.status === 'sent' && (
-                <div className={styles.assistantMessage}>{localMessage.assistantText}</div>
-              )}
-
-              {localMessage.status === 'failed' && (
-                <div className={styles.assistantMessage}>
-                  <p>Не удалось отправить сообщение. Попробуйте ещё раз.</p>
-
-                  <button type="button" onClick={handleRetry} className={styles.retryButton}>
-                    Повторить
-                  </button>
-                </div>
-              )}
-            </>
+              <ArrowDown size={20} aria-hidden="true" />
+            </button>
           )}
         </div>
       )}

@@ -11,6 +11,7 @@ export interface Session {
   id: string;
   state: SessionState;
   created_at: string;
+  first_message?: string | null;
 }
 
 // Ответ GET /api/sessions
