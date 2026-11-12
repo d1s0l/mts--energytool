@@ -11,11 +11,12 @@ import styles from './ChatPage.module.scss';
 
 interface ChatPageContext {
   activeSessionId: string | null;
-  setActiveSessionId: (id: string | null) => void;
+  setActiveSessionId: React.Dispatch<React.SetStateAction<string | null>>;
 }
 
 interface LocalMessage {
   id: string;
+  sessionId: string | null;
   text: string;
   status: 'sending' | 'failed' | 'sent';
   assistantText?: string;
@@ -27,6 +28,7 @@ export function ChatPage() {
   const [isChatStarted, setIsChatStarted] = useState(false);
   const [localMessage, setLocalMessage] = useState<LocalMessage | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
+  const activeSessionIdRef = useRef(activeSessionId);
   const shouldAutoScrollRef = useRef(true);
   const isScrollingToBottomRef = useRef(false);
   const isAtBottomRef = useRef(true);
@@ -36,16 +38,23 @@ export function ChatPage() {
   });
   const isAtBottom = scrollState.sessionId !== activeSessionId || scrollState.isAtBottom;
 
+  if (localMessage && localMessage.sessionId !== activeSessionId) {
+    setLocalMessage(null);
+  }
+
   const { sendMessage, isLoading } = useSendMessage({
     activeSessionId,
     setActiveSessionId,
   });
 
-  const { data: chat, isLoading: isHistoryLoading } = useGetChatQuery(activeSessionId ?? '', {
-    skip: !activeSessionId,
-  });
+  const { currentData, isLoading: isHistoryLoading } = useGetChatQuery(
+    activeSessionId ?? '',
+    { skip: !activeSessionId },
+  );
+  const chat = currentData?.id === activeSessionId ? currentData : undefined;
 
   useLayoutEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
     shouldAutoScrollRef.current = true;
     isScrollingToBottomRef.current = false;
     isAtBottomRef.current = true;
@@ -101,28 +110,47 @@ export function ChatPage() {
     setIsChatStarted(true);
 
     const messageId = crypto.randomUUID();
+    let messageSessionId = activeSessionId;
 
     setLocalMessage({
       id: messageId,
+      sessionId: messageSessionId,
       text,
       status: 'sending',
     });
 
     try {
-      const response = await sendMessage(text);
+      const response = await sendMessage(text, (sessionId) => {
+        messageSessionId = sessionId;
 
-      setLocalMessage({
-        id: response.user_message.id,
-        text: response.user_message.text,
-        status: 'sent',
-        assistantText: response.assistant_message.text,
+        if (activeSessionIdRef.current === null) {
+          setLocalMessage((current) =>
+            current?.id === messageId ? { ...current, sessionId } : current,
+          );
+        }
       });
+
+      if (activeSessionIdRef.current !== response.session_id) return;
+
+      setLocalMessage((current) =>
+        current?.id === messageId
+          ? {
+              id: response.user_message.id,
+              sessionId: response.session_id,
+              text: response.user_message.text,
+              status: 'sent',
+              assistantText: response.assistant_message.text,
+            }
+          : current,
+      );
     } catch (error) {
       console.error('Ошибка отправки сообщения:', error);
 
-      setLocalMessage((current) =>
-        current?.id === messageId ? { ...current, status: 'failed' } : current,
-      );
+      if (activeSessionIdRef.current === messageSessionId) {
+        setLocalMessage((current) =>
+          current?.id === messageId ? { ...current, status: 'failed' } : current,
+        );
+      }
     }
   };
 
@@ -132,9 +160,12 @@ export function ChatPage() {
     void handleSend(localMessage.text);
   };
 
+  const visibleLocalMessage =
+    localMessage?.sessionId === activeSessionId ? localMessage : null;
+
   const isLocalMessageInHistory =
-    localMessage?.status === 'sent' &&
-    chat?.messages.some((message) => message.id === localMessage.id);
+    visibleLocalMessage?.status === 'sent' &&
+    chat?.messages.some((message) => message.id === visibleLocalMessage.id);
 
   const hasChatStarted = isChatStarted || Boolean(activeSessionId);
 
@@ -169,21 +200,21 @@ export function ChatPage() {
               </div>
             ))}
 
-            {localMessage && !isLocalMessageInHistory && (
+            {visibleLocalMessage && !isLocalMessageInHistory && (
               <>
-                <div className={styles.userMessage}>{localMessage.text}</div>
+                <div className={styles.userMessage}>{visibleLocalMessage.text}</div>
 
-                {localMessage.status === 'sending' && (
+                {visibleLocalMessage.status === 'sending' && (
                   <div className={styles.assistantMessage}>
                     <ThinkingLoader />
                   </div>
                 )}
 
-                {localMessage.status === 'sent' && (
-                  <div className={styles.assistantMessage}>{localMessage.assistantText}</div>
+                {visibleLocalMessage.status === 'sent' && (
+                  <div className={styles.assistantMessage}>{visibleLocalMessage.assistantText}</div>
                 )}
 
-                {localMessage.status === 'failed' && (
+                {visibleLocalMessage.status === 'failed' && (
                   <div className={styles.assistantMessage}>
                     <p>Не удалось отправить сообщение. Попробуйте ещё раз.</p>
 

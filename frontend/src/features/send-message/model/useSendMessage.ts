@@ -1,9 +1,11 @@
+import type { Dispatch, SetStateAction } from 'react';
+
 import { useCreateChatMutation } from '@/entities/session/api/sessionApi';
 import { useSendMessageMutation } from '../api/sendMessageApi';
 
 interface UseSendMessageProps {
   activeSessionId: string | null;
-  setActiveSessionId: (id: string | null) => void;
+  setActiveSessionId: Dispatch<SetStateAction<string | null>>;
 }
 
 export function useSendMessage({ activeSessionId, setActiveSessionId }: UseSendMessageProps) {
@@ -11,14 +13,17 @@ export function useSendMessage({ activeSessionId, setActiveSessionId }: UseSendM
 
   const [sendMessageMutation, { isLoading: isSending }] = useSendMessageMutation();
 
-  const sendMessage = async (text: string) => {
+  const sendMessage = async (text: string, onSessionCreated?: (id: string) => void) => {
     let sessionId = activeSessionId;
 
     if (!sessionId) {
       const session = await createChat().unwrap();
 
       sessionId = session.id;
-      setActiveSessionId(sessionId);
+      setActiveSessionId((currentSessionId) =>
+        currentSessionId === null ? sessionId : currentSessionId,
+      );
+      onSessionCreated?.(sessionId);
     }
 
     return sendMessageMutation({
