@@ -167,7 +167,8 @@ class ConsultantTests(unittest.TestCase):
             )
         )
         self.assertNotIn(question, reply.text)
-        self.assertTrue(reply.text.endswith("Как сейчас собираете показания?"))
+        self.assertEqual(client.calls, 1)
+        self.assertTrue(reply.text.strip())
 
     def test_user_can_request_answer_without_follow_up(self):
         reply = asyncio.run(
@@ -412,6 +413,63 @@ class GroundingReviewTests(unittest.TestCase):
             consultant = create_consultant()
         self.assertIsInstance(consultant.reviewer, GroundingReviewer)
 
+
+
+class FollowUpAndTariffRegressionTests(unittest.TestCase):
+    def test_correction_succeeds_without_repeating_pending_model_question(self):
+        draft=output(answer='Принято, 45 счётчиков.', kind='clarify', evidence_ids=[],
+                     follow_up_question='Какие модели счётчиков стоят на складах?')
+        client=Client([draft])
+        history=[{'role':'user','content':'40 счётчиков'},
+                 {'role':'assistant','content':'Какие модели счётчиков установлены на складах?'}]
+        reply=asyncio.run(EnergyConsultant(client)(text='Исправление: 45, а не 40.',
+            history=history,search=Search()))
+        self.assertEqual(reply.text,'Принято, 45 счётчиков.')
+        self.assertEqual(client.calls,1)
+
+    def test_correction_allows_null_question_when_previous_slot_is_pending(self):
+        draft=output(answer='Принято, 45 счётчиков.', kind='clarify', evidence_ids=[],follow_up_question=None)
+        reply=asyncio.run(EnergyConsultant(Client([draft]))(text='Исправление: 45, а не 40.',
+            history=[{'role':'assistant','content':'Какие модели счётчиков установлены?'}],search=Search()))
+        self.assertEqual(reply.text,'Принято, 45 счётчиков.')
+
+    def test_pending_question_for_other_object_does_not_suppress_current_question(self):
+        from consultant_impl import reconcile_follow_up
+        memory={'facts':[{'field':'active_object','scope':'client','status':'provided','value':'Второй склад'}],
+                'asked':[{'field':'device_models','scope':'Первый склад'}]}
+        data={'answer':'Уточним приборы.', 'follow_up_question':'Какие модели счётчиков установлены?'}
+        self.assertFalse(reconcile_follow_up(data,[{'role':'user','content':'Второй склад'}],memory))
+        self.assertIsNotNone(data['follow_up_question'])
+
+    def test_price_category_is_not_single_or_dual_tariff(self):
+        from consultant_impl import validate_tariff_claims
+        with self.assertRaisesRegex(ValueError,'single/dual'):
+            validate_tariff_claims('Сравним счета.', 'Какая у вас ценовая категория — двухтарифная или однотарифная?',
+                                   [{'role':'user','content':'Счёт вырос'}])
+
+    def test_tentative_price_category_requires_conditional_explanation(self):
+        from consultant_impl import validate_tariff_claims
+        messages=[{'role':'user','content':'Кажется, четвёртая. Что проверить?'}]
+        with self.assertRaisesRegex(ValueError,'tentative'):
+            validate_tariff_claims('В четвёртой категории мощность оплачивается отдельно.', None,messages)
+        validate_tariff_claims('Если четвёртая категория подтвердится, проверьте плату за мощность.',None,messages)
+
+    def test_evening_hours_alone_do_not_establish_expensive_tariff(self):
+        from consultant_impl import validate_tariff_claims
+        messages=[{'role':'user','content':'Стали работать вечером, счёт вырос.'}]
+        with self.assertRaisesRegex(ValueError,'Evening'):
+            validate_tariff_claims('Если стали работать вечером, вероятно, нагрузка перенеслась в дорогие часы.',None,messages)
+        validate_tariff_claims('Если по вашему тарифу вечерние часы дороже, это может влиять на счёт.',None,messages)
+
+    def test_reviewer_sees_only_cited_fragments(self):
+        class RecordingClient:
+            async def complete(self,messages):
+                self.payload=json.loads(messages[-1]['content'])
+                return GroundingReviewTests.verdict()
+        client=RecordingClient()
+        asyncio.run(GroundingReviewer(client).check(json.loads(output()),'Ответ',[],
+                    {'fact':HIT,'other':{**HIT,'text':'Другой продукт'}}))
+        self.assertEqual([e['id'] for e in client.payload['evidence']],['fact'])
 
 
 class ConsultationPlanningTests(unittest.TestCase):

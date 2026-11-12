@@ -34,6 +34,7 @@ SCENARIOS = {
 
 
 def run(report, output, consultant, client, search):
+    failed = False
     for name, turns in SCENARIOS.items():
         scenario = report.setdefault('scenarios', {}).setdefault(name, {'turns': [], 'history': [], 'memory': empty_memory()})
         for index, text in enumerate(turns):
@@ -75,10 +76,13 @@ def run(report, output, consultant, client, search):
             save(output, report)
             print(f'{name}/{index+1}: {row["status"]}', flush=True)
             if row['status'] != 'answered':
-                return 1
-    report['status'] = 'complete'
+                if row['status'] == 'rate_limited':
+                    return 1
+                failed = True
+                break
+    report['status'] = 'stopped_after_error' if failed else 'complete'
     save(output, report)
-    return 0
+    return 1 if failed else 0
 
 
 def main():

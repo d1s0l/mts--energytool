@@ -18,6 +18,17 @@ def fact(field, value, source, quote, **changes):
 
 
 class MemoryTests(unittest.TestCase):
+    def test_active_object_is_applied_before_its_facts_regardless_of_json_order(self):
+        messages = [{'message_id':'u', 'role':'user', 'content':'Второй склад: 300 кВт'}]
+        state, warnings = verified_memory_updates(None, [
+            fact('connected_power', '300 кВт', 'u', messages[0]['content'], scope='client'),
+            fact('active_object', 'Второй склад', 'u', messages[0]['content']),
+        ], messages)
+        self.assertEqual(warnings, [])
+        power = next(f for f in state['facts'] if f['field'] == 'connected_power')
+        self.assertEqual(power['scope'], 'Второй склад')
+        self.assertIn('connected_power', known_fields(state))
+
     def test_optional_extraction_normalizes_scope_and_preserves_user_wording(self):
         messages = [{'message_id':'u', 'role':'user', 'content':'Хочу уменьшить счета.'}]
         state, warnings = verified_memory_updates(None, [fact('goal', 'сэкономить', 'u',

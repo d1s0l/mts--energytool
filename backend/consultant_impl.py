@@ -18,7 +18,7 @@ except ModuleNotFoundError:
 
 
 from dialog_memory import (
-    check_lead_against_memory, indexed_messages, known_fields, merge_memory, remember_question, question_field, manager_summary, verified_memory_updates,
+    active_scope, check_lead_against_memory, indexed_messages, known_fields, merge_memory, remember_question, question_field, manager_summary, verified_memory_updates,
 )
 
 
@@ -59,6 +59,13 @@ POLICY = """Ты консультант МТС EnergyTool. Отвечай по-�
 разные объекты и возврат к теме. Не смешивай мощность (кВт) и потребление (кВт·ч).
 Не усиливай слова клиента: вечерняя нагрузка не означает преимущественно ночную,
 «часть приборов» не означает весь парк, «кажется» не означает подтверждённый факт.
+Если клиент лишь предполагает свою ценовую категорию, объясняй её условия через
+«если категория подтвердится». Ценовые категории — первая–шестая; однотарифный
+и двухтарифный прибор — характеристики учёта, а не названия ценовых категорий.
+Работа вечером не доказывает более дорогую цену: она зависит от категории и тарифа.
+При исправлении одного параметра достаточно подтвердить исправление. Если вопрос
+уже задан и клиент его ещё не закрыл, не повторяй его другими словами; новый вопрос
+не обязателен на каждом ходе. Не считай отсутствие ответа признанием «не знаю».
 Уточняй только параметр, необходимый для текущего решения, а не для общего опроса.
 Описание своей проблемы и просьба «можно разобраться?» — начало консультации:
 ответь по существу и выясни один недостающий диагностический параметр. Не заканчивай
@@ -398,7 +405,7 @@ def validate_project_claims(answer, plan):
         raise ValueError("Receiving photos is not proof of an existing automated OCR service")
 
 
-def append_follow_up(data, messages):
+def append_follow_up(data, messages, *, allow_no_follow_up=False):
     """Render a separate next question into the actual user-visible reply."""
     answer = data["answer"].strip()
     question = data.get("follow_up_question")
@@ -413,7 +420,7 @@ def append_follow_up(data, messages):
     if stop or data.get("lead") is not None:
         return answer
     if question is None:
-        if required:
+        if required and not allow_no_follow_up:
             raise ValueError("Missing follow_up_question: ask one unknown relevant parameter")
         return answer
     if (
@@ -430,6 +437,47 @@ def append_follow_up(data, messages):
         if message["role"] == "assistant" and question.casefold() in message["content"].casefold():
             raise ValueError("Repeated follow_up_question: use the existing dialog context")
     return answer if question in answer else answer + "\n\n" + question
+
+
+def reconcile_follow_up(data, messages, memory):
+    """Suppress a known or pending slot, including reworded repeated questions."""
+    field = question_field(data.get('follow_up_question'))
+    known = known_fields(memory)
+    if memory.get('asked'):
+        pending = {q['field'] for q in memory['asked']
+                   if q['scope'] in {'client', active_scope(memory)}}
+    else:
+        pending = {question_field(m['content']) for m in messages[-8:-1]
+                   if m['role'] == 'assistant' and '?' in m['content']}
+    pending.discard(None)
+    if field and (field in known or field in pending):
+        question = data['follow_up_question'].strip()
+        if data['answer'].rstrip().endswith(question):
+            data['answer'] = data['answer'].rstrip()[:-len(question)].rstrip()
+        data['follow_up_question'] = None
+        return True
+    # A factual correction need not restart an unanswered qualification question.
+    return (data.get('follow_up_question') is None and bool(pending)
+            and bool(re.search(r'исправ|поправ|уточнен|не \d', messages[-1]['content'], re.I)))
+
+
+def validate_tariff_claims(answer, question, messages):
+    """Reject observed category/zone confusion and promotion of tentative input."""
+    answer = answer.lower().replace('ё', 'е')
+    if re.search(r'ценов[^?]{0,30}категор[^?]{0,80}(?:однотариф|двухтариф)', (question or '')+'\n'+answer, re.I):
+        raise ValueError('Ask the price category (1–6); do not equate it with single/dual-tariff meters')
+    users = [m['content'].lower().replace('ё', 'е') for m in messages if m['role'] == 'user']
+    category = next((u for u in reversed(users) if re.search(
+        r'категори|(?:кажется|вроде|не уверен)[^.!?]{0,30}(?:перв|втор|треть|четверт|пят|шест)', u, re.I)), '')
+    tentative = bool(re.search(r'кажется|вроде|не уверен', category, re.I))
+    for sentence in re.split(r'(?<=[.!?])\s+', answer):
+        if (tentative and re.search(r'(?:в |для |на )?(?:перв|втор|треть|четверт|пят|шест)[а-я]*\s+категори', sentence, re.I)
+                and not re.search(r'если|подтверд|предполож|возможно|уточн', sentence, re.I)):
+            raise ValueError('The price category is tentative: describe it conditionally, not as a confirmed client fact')
+        if (not category and re.search(r'вечер', sentence, re.I)
+                and re.search(r'дорог', sentence, re.I)
+                and not re.search(r'если[^.!?]*(?:тариф|цен|категори)|зависит|неизвест', sentence, re.I)):
+            raise ValueError('Evening work does not establish expensive hours without the client tariff/category')
 
 
 def validate_device_compatibility(text, answer, kind):
@@ -636,9 +684,11 @@ class EnergyConsultant:
                     current_plan = None
                 if current_plan and data["kind"] in {"product", "clarify"} and data.get("lead") is None:
                     data["follow_up_question"] = current_plan["question"]
-                if question_field(data.get("follow_up_question")) in known_fields(next_memory):
-                    data["follow_up_question"] = None
-                answer = append_follow_up(data, messages)
+                allow_no_follow_up = reconcile_follow_up(data, messages, next_memory)
+                answer = append_follow_up(data, messages, allow_no_follow_up=allow_no_follow_up)
+                if not answer.strip():
+                    raise ValueError('Answer must explain or acknowledge the latest user message')
+                validate_tariff_claims(answer, data.get('follow_up_question'), messages)
                 validate_project_claims(data["answer"], current_plan)
                 validate_device_compatibility(text, answer, data["kind"])
                 if re.search(
@@ -756,8 +806,8 @@ class GroundingReviewer:
             "answer_support": data.get("answer_support", []),
             "dialog_memory": data.get("verified_memory"),
             "follow_up_question": data.get("follow_up_question"),
-            "evidence": [{"id": key, "text": value["text"]}
-                         for key, value in evidence.items()],
+            "evidence": [{"id": key, "source": value.get('source'), "text": value["text"]}
+                         for key, value in evidence.items() if key in data.get('evidence_ids', [])],
         }
         raw = await self.client.complete([
             {"role": "system", "content": REVIEW_POLICY},
@@ -802,6 +852,13 @@ question_appropriate: вопрос двигает текущую консуль�
 помочь разобраться тоже требуют выявления потребности, даже без буквальных слов
 «подберите решение». Для закрытого FAQ о функции, готовой заявки, отказа продолжать
 или прощания новый вопрос не обязателен.
+Исправление параметра клиента можно просто подтвердить без нового вопроса.
+Если нужный вопрос уже задавался и клиент не ответил, отсутствие повторного вопроса
+не является ошибкой. Не требуй повторять уже заданное уточнение.
+Не путай ценовые категории (первая–шестая) и одно-/двухтарифные приборы.
+Не считай вечерние часы более дорогими без подтверждённого тарифа клиента.
+Если клиент сказал «кажется, четвёртая», выводы для четвёртой категории допустимы
+лишь условно; не подтверждай её за клиента.
 Если ответ требует проверки совместимости или состояния конкретного объекта, а клиент
 нужных параметров не сообщил, уточнение требуется. Не путай это с общим правилом
 верификации показаний: оно само по себе не требует нового вопроса клиенту.

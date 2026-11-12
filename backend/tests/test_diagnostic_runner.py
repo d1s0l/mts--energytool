@@ -16,6 +16,23 @@ from evaluate_dialogs import run
 
 
 class DiagnosticRunnerTests(unittest.TestCase):
+    def test_failed_dialog_does_not_hide_independent_scenario(self):
+        calls=[]
+        async def consultant(**kwargs):
+            calls.append(kwargs['text'])
+            if kwargs['text']=='fail':
+                raise ValueError('invalid draft')
+            return ConsultantReply(text='Answer',dialog_memory=kwargs['memory'])
+        report={'status':'running','scenarios':{}}
+        with tempfile.TemporaryDirectory() as tmp, patch('evaluate_dialogs.SCENARIOS',
+                {'one':['fail','dependent'], 'two':['independent']}):
+            code=run(report,Path(tmp)/'report.json',consultant,
+                SimpleNamespace(calls=0,traces=[]),SimpleNamespace(last_result=None))
+        self.assertEqual(code,1)
+        self.assertEqual(calls,['fail','independent'])
+        self.assertEqual(report['status'],'stopped_after_error')
+        self.assertEqual(report['scenarios']['two']['turns'][0]['status'],'answered')
+
     def test_trace_preserves_request_before_repair_mutates_messages(self):
         client=EvaluationClient(ModelConfig('http://provider','test','test'),interval=0,trace=True)
         messages=[{'role':'user','content':'Original request'}]

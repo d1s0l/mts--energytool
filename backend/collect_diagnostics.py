@@ -20,6 +20,7 @@ def main():
     parser.add_argument('--questions',type=Path,required=True)
     parser.add_argument('--output-root',type=Path,required=True)
     parser.add_argument('--offline',action='store_true',help='Do not call the model')
+    parser.add_argument('--answer-ids',help='Comma-separated demo IDs for a targeted answer check; dialogues still run in full')
     args=parser.parse_args()
     root=Path(__file__).resolve().parents[1]
     from dotenv import dotenv_values
@@ -34,6 +35,7 @@ def main():
     files += list((root/'backend/tests').glob('*.py')) + list((root/'rag').glob('*.py'))
     files += list((root/'backend/app/migrations').glob('*.sql'))
     digest=hashlib.sha256()
+    digest.update(('answer_ids='+(args.answer_ids or 'all')).encode())
     for file in sorted(files):
         digest.update(str(file.relative_to(root)).encode());digest.update(file.read_bytes())
     for key in ('LLM_MODEL','OPENAI_MODEL','GEN_MODEL','MAX_TOKENS','TEMPERATURE','RAG_MODE','EMB_MODEL','RERANKER_MODEL',
@@ -62,7 +64,8 @@ def main():
     manifest={'commit':commit,'fingerprint':fingerprint,'python':sys.version.split()[0],
         'model':env.get('LLM_MODEL') or env.get('OPENAI_MODEL') or env.get('GEN_MODEL'),
         'model_config':{k:env.get(k) for k in ('RAG_MODE','MAX_TOKENS','LLM_TIMEOUT','MAX_WORKERS')},
-        'packages':{},'stages':[],'status':'running','test_data_only':True}
+        'packages':{},'stages':[],'status':'running','test_data_only':True,
+        'answer_ids':args.answer_ids or 'all'}
     for package in ('pydantic','pytest','fastapi','psycopg','httpx'):
         try:manifest['packages'][package]=importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:manifest['packages'][package]=None
@@ -134,7 +137,8 @@ def main():
         if not args.offline:
             common=['--env',str(args.env),'--kb',str(args.kb)]
             for name,script,more in (
-                ('answers','evaluate_answers.py',['--questions',str(args.questions),'--trace']),
+                ('answers','evaluate_answers.py',['--questions',str(args.questions),'--trace']
+                    + (['--ids',args.answer_ids] if args.answer_ids else [])),
                 ('dialogs','evaluate_dialogs.py',[]),
             ):
                 code=stage(name,[sys.executable,str(root/'backend'/script),*common,

@@ -137,6 +137,9 @@ def question_field(question):
         'connected_power': r'присоединенн.*мощност',
         'region': r'каком регионе|какой регион',
         'day_night_split': r'разбивк.*(?:ноч|днев|день)',
+        'collection_method': r'как.*собира.*показан|(?:способ|схем).*сбор.*(?:данн|показан)',
+        'price_category': r'какая.*ценов.*категори|какой.*ценов.*категори',
+        'existing_workshop_meters': r'(?:есть|стоят|установлен).*счетчик.*цех|счетчик.*цех.*(?:есть|стоят|установлен)',
     }
     return next((field for field, pattern in patterns.items() if re.search(pattern, q)), None)
 
@@ -171,7 +174,9 @@ def verified_memory_updates(previous, updates, messages):
     warnings = []
     if not isinstance(updates, list):
         return state, ['memory_updates_not_a_list']
-    for index, raw in enumerate(updates[:24]):
+    ordered = sorted(enumerate(updates[:24]), key=lambda pair:
+                     0 if isinstance(pair[1], dict) and pair[1].get('field') == 'active_object' else 1)
+    for index, raw in ordered:
         try:
             if not isinstance(raw, dict):
                 raise ValueError('invalid_item')
