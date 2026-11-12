@@ -10,7 +10,7 @@ from rag.rag_search import Config, KnowledgeSearch
 
 from app.consultant import ConsultantReply
 from build_submission import build_submission
-from solution import answer_questions, read_questions, split_dialog, write_submission
+from solution import answer_questions, read_questions, run, split_dialog, write_submission
 
 
 @pytest.mark.parametrize("separator", ["\n", r"\n"])
@@ -92,6 +92,10 @@ def test_archive_runs_without_web_backend_and_fails_explicitly_without_model(tmp
         "GEN_MODEL",
     ):
         environment.pop(name, None)
+    data = tmp_path / "standalone/data"
+    data.mkdir()
+    (data / "questions.csv").write_text("id,question\n1,Учёт\n", encoding="utf-8")
+    environment["DATA_DIR"] = "data"
     result = subprocess.run(
         [sys.executable, "solution.py"],
         cwd=tmp_path / "standalone",
@@ -102,7 +106,97 @@ def test_archive_runs_without_web_backend_and_fails_explicitly_without_model(tmp
     )
     assert result.returncode == 1
     assert "LLM_BASE_URL" in result.stderr
-    assert not (tmp_path / "standalone/submission.csv").exists()
+    assert (tmp_path / "standalone/submission.csv").exists()
+    assert '"stage": "load_consultant"' in result.stderr
+
+
+def test_question_and_checkpoint_failures_do_not_stop_next_question(capsys):
+    calls = []
+    snapshots = []
+
+    async def consultant(*, text, **kwargs):
+        calls.append(text)
+        if text == "сбой":
+            raise RuntimeError("SECRET-CONTACT-AND-TOKEN")
+        return ConsultantReply(text="Ответ")
+
+    def checkpoint(answers):
+        snapshots.append(list(answers))
+        if len(snapshots) == 1:
+            raise OSError(28, "SECRET-PATH")
+
+    answers = asyncio.run(
+        answer_questions(
+            [("failed-id", "сбой"), ("ok-id", "успех")],
+            None,
+            consultant,
+            1,
+            checkpoint=checkpoint,
+        )
+    )
+    assert calls == ["сбой", "успех"]
+    assert answers[1] == "Ответ"
+    assert len(snapshots) == 2
+    logs = capsys.readouterr().err
+    assert '"question_id": "failed-id"' in logs
+    assert '"stage": "consultant"' in logs
+    assert '"stage": "checkpoint"' in logs
+    assert '"errno": 28' in logs
+    assert "SECRET" not in logs
+
+
+def test_final_save_retries_and_keeps_successful_answers(tmp_path, monkeypatch):
+    import solution
+
+    (tmp_path / "questions.csv").write_text("id,question\n1,Учёт\n", encoding="utf-8")
+    monkeypatch.setattr(solution, "KnowledgeSearch", lambda *args: None)
+    original = solution.write_submission
+    saves = []
+
+    def intermittent_save(path, questions, answers):
+        saves.append(list(answers))
+        if len(saves) in (2, 3):
+            raise PermissionError("temporary failure")
+        original(path, questions, answers)
+
+    async def consultant(**kwargs):
+        return ConsultantReply(text="Сохранённый ответ")
+
+    monkeypatch.setattr(solution, "write_submission", intermittent_save)
+    output = tmp_path / "submission.csv"
+    asyncio.run(run(consultant, tmp_path, output, 1))
+    assert len(saves) == 4
+    with output.open(encoding="utf-8", newline="") as stream:
+        assert list(csv.DictReader(stream)) == [{"id": "1", "answer": "Сохранённый ответ"}]
+
+
+def test_persistent_save_failure_is_reported_and_keeps_previous_csv(tmp_path, monkeypatch):
+    import solution
+
+    (tmp_path / "questions.csv").write_text("id,question\n1,Учёт\n", encoding="utf-8")
+    monkeypatch.setattr(solution, "KnowledgeSearch", lambda *args: None)
+    original = solution.write_submission
+    calls = 0
+
+    def failed_save(path, questions, answers):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise OSError(28, "disk full")
+        original(path, questions, answers)
+
+    async def consultant(**kwargs):
+        return ConsultantReply(text="Ответ")
+
+    monkeypatch.setattr(solution, "write_submission", failed_save)
+    output = tmp_path / "submission.csv"
+    with pytest.raises(OSError):
+        asyncio.run(run(consultant, tmp_path, output, 1))
+    with output.open(encoding="utf-8", newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    assert rows[0]["id"] == "1"
+    assert rows[0]["answer"].strip()
+    assert calls == 5
 
 
 def test_packaged_entry_point_reads_data_and_writes_csv(tmp_path):
