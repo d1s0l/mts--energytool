@@ -3,12 +3,14 @@
 import asyncio
 import csv
 import importlib
+import json
 import os
 import re
 import sys
 import tempfile
 import time
 from collections import deque
+from contextlib import contextmanager
 from pathlib import Path
 
 try:
@@ -24,6 +26,43 @@ except ModuleNotFoundError as exc:
     if exc.name != "rag_search":
         raise
     from rag.rag_search import Config, KnowledgeSearch
+
+
+def diagnose(stage, exc, *, question_id=None, elapsed_ms=None):
+    # Only structural traceback data: exception messages and source lines may contain secrets.
+    frames = []
+    trace = exc.__traceback__
+    while trace is not None:
+        code = trace.tb_frame.f_code
+        frames.append(
+            {"file": Path(code.co_filename).name, "function": code.co_name, "line": trace.tb_lineno}
+        )
+        trace = trace.tb_next
+    print(
+        json.dumps(
+            {
+                "event": "failure",
+                "stage": stage,
+                "question_id": question_id,
+                "error_type": type(exc).__name__,
+                "elapsed_ms": elapsed_ms,
+                "errno": exc.errno if isinstance(exc, OSError) else None,
+                "frames": frames,
+            },
+            ensure_ascii=True,
+        ),
+        file=sys.stderr,
+    )
+
+
+@contextmanager
+def stage(name):
+    started = time.monotonic()
+    try:
+        yield
+    except Exception as exc:
+        diagnose(name, exc, elapsed_ms=round((time.monotonic() - started) * 1000, 3))
+        raise
 
 
 def read_questions(path: Path) -> list[tuple[str, str]]:
@@ -93,16 +132,24 @@ async def answer_questions(
 
     async def worker():
         while pending:
-            index, (_, question) = pending.popleft()
+            index, (qid, question) = pending.popleft()
+            started = time.monotonic()
+            current_stage = "parse_dialog"
             remaining = 60 if deadline is None else min(60, deadline - time.monotonic())
             if remaining <= 0:
+                print(
+                    "Submission deadline reached; remaining answers retain fallback",
+                    file=sys.stderr,
+                )
                 return
             try:
                 text, history = split_dialog(question)
                 async with asyncio.timeout(remaining):
-                    reply = ConsultantReply.model_validate(
-                        await consultant(text=text, history=history, search=search)
-                    )
+                    current_stage = "consultant"
+                    raw_reply = await consultant(text=text, history=history, search=search)
+                    current_stage = "validate_reply"
+                    reply = ConsultantReply.model_validate(raw_reply)
+                current_stage = "format_answer"
                 if reply.lead is not None:
                     reply.text += (
                         "\n\nЗаявка для менеджера (тестовые данные):\n"
@@ -121,10 +168,17 @@ async def answer_questions(
                     raise ValueError("An answer exceeds the platform limit of 10000 characters")
                 answers[index] = reply.text
             except Exception as exc:
-                # Never emit provider exception text: it may contain secrets or contacts.
-                print(f"Question {index + 1} failed ({type(exc).__name__})", file=sys.stderr)
+                diagnose(
+                    current_stage,
+                    exc,
+                    question_id=qid,
+                    elapsed_ms=round((time.monotonic() - started) * 1000, 3),
+                )
             if checkpoint is not None:
-                checkpoint(answers)
+                try:
+                    checkpoint(answers)
+                except OSError as exc:
+                    diagnose("checkpoint", exc, question_id=qid)
 
     tasks = [asyncio.create_task(worker()) for _ in range(min(max_workers, len(questions)))]
     try:
@@ -171,16 +225,26 @@ def load_consultant() -> Consultant:
     return consultant
 
 
-async def run(consultant: Consultant, data_dir: Path, output: Path, max_workers: int) -> None:
+async def run(
+    consultant: Consultant | None, data_dir: Path, output: Path, max_workers: int
+) -> None:
     if not 1 <= max_workers <= 8:
         raise ValueError("MAX_WORKERS must be between 1 and 8")
-    questions = read_questions(data_dir / "questions.csv")
-    deadline = time.monotonic() + min(1150, max(1, float(os.getenv("SUBMISSION_TIMEOUT", "1100"))))
+    with stage("read_questions"):
+        questions = read_questions(data_dir / "questions.csv")
     fallback = ["Временный технический сбой. Повторите вопрос." for _ in questions]
-    write_submission(output, questions, fallback)
-    engine = await asyncio.to_thread(
-        KnowledgeSearch, data_dir / "knowledge-base.zip", Config.from_env()
-    )
+    with stage("initial_save"):
+        write_submission(output, questions, fallback)
+    with stage("configure_deadline"):
+        budget = min(1150, max(1, float(os.getenv("SUBMISSION_TIMEOUT", "1100"))))
+    deadline = time.monotonic() + budget
+    if consultant is None:
+        with stage("load_consultant"):
+            consultant = load_consultant()
+    with stage("initialize_rag"):
+        engine = await asyncio.to_thread(
+            KnowledgeSearch, data_dir / "knowledge-base.zip", Config.from_env()
+        )
     answers = await answer_questions(
         questions,
         engine,
@@ -189,15 +253,23 @@ async def run(consultant: Consultant, data_dir: Path, output: Path, max_workers:
         deadline=deadline,
         checkpoint=lambda completed: write_submission(output, questions, completed),
     )
-    write_submission(output, questions, answers)
+    with stage("final_save"):
+        for attempt in range(3):
+            try:
+                write_submission(output, questions, answers)
+                break
+            except OSError as exc:
+                if attempt == 2:
+                    raise
+                diagnose("final_save_retry", exc)
+                await asyncio.sleep(0.1)
 
 
 def main() -> int:
     try:
-        consultant = load_consultant()
         asyncio.run(
             run(
-                consultant,
+                None,
                 Path(os.getenv("DATA_DIR", "data")),
                 Path("submission.csv"),
                 int(os.getenv("MAX_WORKERS", "3")),
@@ -205,7 +277,7 @@ def main() -> int:
         )
     except Exception as exc:
         # Текст исключения провайдера может содержать ключ или пользовательские данные.
-        print(f"Submission failed ({type(exc).__name__})", file=sys.stderr)
+        diagnose("submission", exc)
         if isinstance(exc, ModuleNotFoundError) or (
             isinstance(exc, RuntimeError) and "consultant_impl.py" in str(exc)
         ):
