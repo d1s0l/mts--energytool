@@ -18,8 +18,12 @@ class SessionOut(BaseModel):
     deleted_at: datetime | None = None
 
 
+class SessionListItemOut(SessionOut):
+    first_message: str | None = None
+
+
 class SessionListOut(BaseModel):
-    items: list[SessionOut]
+    items: list[SessionListItemOut]
     total: int
     limit: int
     offset: int

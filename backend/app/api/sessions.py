@@ -52,7 +52,9 @@ async def list_sessions(
         )
         total = (await cursor.fetchone())["total"]
         cursor = await conn.execute(
-            "SELECT id, state, created_at, deleted_at FROM sessions "
+            "SELECT id, state, created_at, deleted_at, "
+            "(SELECT text FROM messages WHERE session_id = sessions.id AND role = 'user' "
+            "ORDER BY position LIMIT 1) AS first_message FROM sessions "
             "WHERE (%s OR deleted_at IS NULL) "
             "ORDER BY created_at DESC, id LIMIT %s OFFSET %s",
             (include_deleted, limit, offset),

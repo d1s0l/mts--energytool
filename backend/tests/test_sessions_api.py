@@ -57,6 +57,15 @@ def test_sessions_persist_and_history_is_isolated(tmp_path, monkeypatch):
                 page = client.get("/api/sessions?limit=1&offset=0").json()
                 assert page["total"] == 2
                 assert page["items"][0]["id"] == second["id"]
+                assert page["items"][0]["first_message"] is None
+                await conn.execute(
+                    "INSERT INTO messages (session_id, role, text) "
+                    "VALUES (%s, 'user', 'Следующий вопрос')",
+                    (first["id"],),
+                )
+                titled = client.get("/api/sessions?limit=1&offset=1").json()["items"][0]
+                assert titled["id"] == first["id"]
+                assert titled["first_message"] == "Вопрос"
                 assert client.get("/api/sessions?offset=100").json()["items"] == []
                 missing = client.get(f"/api/sessions/{uuid4()}")
                 assert missing.status_code == 404
@@ -70,7 +79,7 @@ def test_sessions_persist_and_history_is_isolated(tmp_path, monkeypatch):
                 create_app(settings), headers={"Authorization": "Bearer test-access"}
             ) as client:
                 assert client.get("/api/sessions").json()["total"] == 2
-                assert len(client.get(f"/api/sessions/{first['id']}").json()["messages"]) == 2
+                assert len(client.get(f"/api/sessions/{first['id']}").json()["messages"]) == 3
 
     asyncio.run(run())
 
