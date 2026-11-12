@@ -10,11 +10,12 @@ from app.api.health import router as health_router
 from app.api.leads import router as leads_router
 from app.api.sessions import router
 from app.config import Settings
-from app.consultant import Consultant, LeadSummarizer
+from app.consultant import Consultant, ConsultantUnavailable, LeadSummarizer
 from app.db import create_pool
 from app.errors import register_errors
 from app.migrate import migrate
 from app.rag import SearchService
+from consultant_impl import create_consultant
 
 
 @asynccontextmanager
@@ -38,6 +39,13 @@ def create_app(
 ) -> FastAPI:
     load_dotenv(override=False)
     application = FastAPI(title="MTS Energytool API", lifespan=lifespan)
+    if consultant is None:
+        try:
+            consultant = create_consultant()
+        except ConsultantUnavailable:
+            pass  # Health reports missing model configuration.
+    if lead_summarizer is None and hasattr(consultant, "summarize"):
+        lead_summarizer = consultant.summarize
     application.state.settings = settings or Settings()
     application.state.consultant = consultant
     application.state.lead_summarizer = lead_summarizer

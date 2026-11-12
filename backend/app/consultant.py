@@ -28,6 +28,8 @@ class ConsultantReply(BaseModel):
     search_ms: Annotated[FiniteFloat, Field(ge=0)] | None = None
     generation_ms: Annotated[FiniteFloat, Field(ge=0)] | None = None
     sources: list[DebugSource] = Field(default_factory=list)
+    lead: dict[str, str] | None = None
+    lead_summary: str | None = None
 
 
 class ConsultantUnavailable(Exception):

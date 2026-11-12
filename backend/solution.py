@@ -7,15 +7,16 @@ import os
 import re
 import sys
 import tempfile
+import time
 from collections import deque
 from pathlib import Path
 
 try:
-    from consultant import Consultant, ConsultantReply, HistoryMessage
+    from consultant import Consultant, ConsultantReply, ConsultantUnavailable, HistoryMessage
 except ModuleNotFoundError as exc:
     if exc.name != "consultant":
         raise
-    from app.consultant import Consultant, ConsultantReply, HistoryMessage
+    from app.consultant import Consultant, ConsultantReply, ConsultantUnavailable, HistoryMessage
 
 try:
     from rag_search import Config, KnowledgeSearch
@@ -77,24 +78,53 @@ async def answer_questions(
     engine: KnowledgeSearch,
     consultant: Consultant,
     max_workers: int,
+    *,
+    deadline: float | None = None,
+    checkpoint=None,
 ) -> list[str]:
     if not 1 <= max_workers <= 8:
         raise ValueError("MAX_WORKERS must be between 1 and 8")
     pending = deque(enumerate(questions))
-    answers = [""] * len(questions)
+    fallback = (
+        "Не удалось получить ответ из-за временного технического сбоя. Попробуйте повторить вопрос."
+    )
+    answers = [fallback] * len(questions)
     search = SubmissionSearch(engine)
 
     async def worker():
         while pending:
             index, (_, question) = pending.popleft()
-            text, history = split_dialog(question)
-            async with asyncio.timeout(60):
-                reply = ConsultantReply.model_validate(
-                    await consultant(text=text, history=history, search=search)
-                )
-            if len(reply.text) > 10000:
-                raise ValueError("An answer exceeds the platform limit of 10000 characters")
-            answers[index] = reply.text
+            remaining = 60 if deadline is None else min(60, deadline - time.monotonic())
+            if remaining <= 0:
+                return
+            try:
+                text, history = split_dialog(question)
+                async with asyncio.timeout(remaining):
+                    reply = ConsultantReply.model_validate(
+                        await consultant(text=text, history=history, search=search)
+                    )
+                if reply.lead is not None:
+                    reply.text += (
+                        "\n\nЗаявка для менеджера (тестовые данные):\n"
+                        + "\n".join(
+                            f"{label}: {reply.lead.get(key, '')}"
+                            for key, label in (
+                                ("full_name", "ФИО"),
+                                ("phone", "Телефон"),
+                                ("company", "Компания"),
+                            )
+                        )
+                        + "\n"
+                        + (reply.lead_summary or "")
+                    )
+                if len(reply.text) > 10000:
+                    raise ValueError("An answer exceeds the platform limit of 10000 characters")
+                answers[index] = reply.text
+            except Exception as exc:
+                # Never emit provider exception text: it may contain secrets or contacts.
+                print(f"Question {index + 1} failed ({type(exc).__name__})", file=sys.stderr)
+            if checkpoint is not None:
+                checkpoint(answers)
 
     tasks = [asyncio.create_task(worker()) for _ in range(min(max_workers, len(questions)))]
     try:
@@ -145,10 +175,20 @@ async def run(consultant: Consultant, data_dir: Path, output: Path, max_workers:
     if not 1 <= max_workers <= 8:
         raise ValueError("MAX_WORKERS must be between 1 and 8")
     questions = read_questions(data_dir / "questions.csv")
+    deadline = time.monotonic() + min(1150, max(1, float(os.getenv("SUBMISSION_TIMEOUT", "1100"))))
+    fallback = ["Временный технический сбой. Повторите вопрос." for _ in questions]
+    write_submission(output, questions, fallback)
     engine = await asyncio.to_thread(
         KnowledgeSearch, data_dir / "knowledge-base.zip", Config.from_env()
     )
-    answers = await answer_questions(questions, engine, consultant, max_workers)
+    answers = await answer_questions(
+        questions,
+        engine,
+        consultant,
+        max_workers,
+        deadline=deadline,
+        checkpoint=lambda completed: write_submission(output, questions, completed),
+    )
     write_submission(output, questions, answers)
 
 
@@ -170,6 +210,8 @@ def main() -> int:
             isinstance(exc, RuntimeError) and "consultant_impl.py" in str(exc)
         ):
             print("Connect consultant_impl.py exporting create_consultant()", file=sys.stderr)
+        if isinstance(exc, ConsultantUnavailable):
+            print("Configure LLM_BASE_URL, LLM_API_KEY and LLM_MODEL", file=sys.stderr)
         return 1
     return 0
 

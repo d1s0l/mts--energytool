@@ -52,8 +52,8 @@ def test_parallel_answers_preserve_ids_csv_and_isolation(tmp_path):
     async def too_long(**kwargs):
         return ConsultantReply(text="x" * 10001)
 
-    with pytest.raises(ValueError, match="10000"):
-        asyncio.run(answer_questions(questions, engine, too_long, 1))
+    failed = asyncio.run(answer_questions(questions, engine, too_long, 1))
+    assert all("технического сбоя" in answer for answer in failed)
     # Неуспешная обработка не заменяет уже записанный файл частичными ответами.
     with output.open(newline="", encoding="utf-8") as stream:
         assert list(csv.DictReader(stream)) == rows
@@ -70,17 +70,28 @@ def test_input_rejects_duplicate_ids_and_accepts_bom(tmp_path):
 
 def test_archive_runs_without_web_backend_and_fails_explicitly_without_model(tmp_path):
     archive = tmp_path / "submission.zip"
-    assert not build_submission(archive)
+    assert build_submission(archive)
     with ZipFile(archive) as zipped:
         assert set(zipped.namelist()) == {
             "solution.py",
             "consultant.py",
+            "consultant_impl.py",
             "rag_search.py",
             "requirements.txt",
         }
         zipped.extractall(tmp_path / "standalone")
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
+    for name in (
+        "LLM_BASE_URL",
+        "OPENAI_BASE_URL",
+        "LLM_API_KEY",
+        "OPENAI_API_KEY",
+        "LLM_MODEL",
+        "OPENAI_MODEL",
+        "GEN_MODEL",
+    ):
+        environment.pop(name, None)
     result = subprocess.run(
         [sys.executable, "solution.py"],
         cwd=tmp_path / "standalone",
@@ -90,7 +101,7 @@ def test_archive_runs_without_web_backend_and_fails_explicitly_without_model(tmp
         timeout=10,
     )
     assert result.returncode == 1
-    assert "consultant_impl.py" in result.stderr
+    assert "LLM_BASE_URL" in result.stderr
     assert not (tmp_path / "standalone/submission.csv").exists()
 
 

@@ -12,3 +12,4 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://energytool:energytool@localhost:5432/energytool"
     knowledge_base_path: Path = Path("../data/knowledge-base.zip")
     max_workers: int = Field(default=3, ge=1, le=8)
+    api_access_token: str = Field(default="", repr=False)

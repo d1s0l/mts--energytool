@@ -19,6 +19,8 @@ def build_submission(
         if consultant.suffix != ".py":
             raise ValueError("Consultant implementation must be a .py file")
         files["consultant_impl.py"] = consultant
+    else:
+        files["consultant_impl.py"] = backend / "consultant_impl.py"
     for module in modules or []:
         if module.suffix != ".py" or module.name in files:
             raise ValueError("Additional modules must have unique .py filenames")
@@ -30,7 +32,7 @@ def build_submission(
     with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:
         for name, source in files.items():
             archive.write(source, name)
-    return consultant is not None
+    return True
 
 
 def main() -> None:
@@ -45,10 +47,8 @@ def main() -> None:
         "--module", type=Path, action="append", help="Additional root Python module"
     )
     args = parser.parse_args()
-    connected = build_submission(args.output, args.consultant, args.module)
+    build_submission(args.output, args.consultant, args.module)
     print(f"Created {args.output}")
-    if not connected:
-        print("Preparation archive only: add --consultant before uploading to the platform")
 
 
 if __name__ == "__main__":

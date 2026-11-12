@@ -39,13 +39,14 @@ def test_lead_creation_retry_errors_and_retention(tmp_path, monkeypatch):
             cursor = await conn.execute("SELECT current_schema() AS name")
             schema = (await cursor.fetchone())["name"]
             settings = Settings(
+                api_access_token="test-access",
                 database_url=make_conninfo(
                     os.environ["TEST_DATABASE_URL"], options=f"-c search_path={schema}"
                 ),
                 knowledge_base_path=tmp_path,
             )
             application = create_app(settings)
-            with TestClient(application) as client:
+            with TestClient(application, headers={"Authorization": "Bearer test-access"}) as client:
                 session_id = client.post("/api/sessions").json()["id"]
                 session = f"/api/sessions/{session_id}"
                 path = session + "/lead"
@@ -87,6 +88,11 @@ def test_lead_creation_retry_errors_and_retention(tmp_path, monkeypatch):
                     client.post(path, json={**contacts, "company": "Другая компания"}).status_code
                     == 409
                 )
+                corrected = client.put(path, json={**contacts, "company": "Другая компания"})
+                assert corrected.status_code == 200
+                assert corrected.json()["id"] == lead["id"]
+                assert corrected.json()["company"] == "Другая компания"
+                lead = corrected.json()
                 cursor = await conn.execute(
                     "SELECT count(*) AS count FROM leads WHERE session_id = %s", (session_id,)
                 )
