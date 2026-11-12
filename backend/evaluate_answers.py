@@ -1,6 +1,7 @@
 """Resumable serial model evaluation. Credentials are never recorded in reports."""
 import argparse
 import asyncio
+import copy
 import json
 import math
 import os
@@ -38,7 +39,7 @@ class EvaluationClient(ModelClient):
         self.last_call = time.monotonic()
         self.calls += 1
         started = time.monotonic()
-        record = {"messages": messages, "status": "started"} if self.trace else None
+        record = {"messages": copy.deepcopy(messages), "status": "started"} if self.trace else None
         try:
             content = self._request(messages)
             self.outputs.append(content)
@@ -93,7 +94,7 @@ def evaluate(questions, consultant, client, search, report, output):
                 text, history = split_dialog(question)
                 reply = asyncio.run(consultant(text=text, history=history, search=search))
                 row.update(answer=reply.text, state=reply.state, lead=reply.lead,
-                           summary=reply.lead_summary, dialog_memory=reply.dialog_memory, action=reply.requested_action, sources=[s.model_dump() for s in reply.sources],
+                           summary=reply.lead_summary, dialog_memory=reply.dialog_memory, action=reply.requested_action, memory_warnings=reply.memory_warnings, sources=[s.model_dump() for s in reply.sources],
                            word_count=len(reply.text.split()), status='answered')
                 failures = 0
             except ModelRateLimited as exc:

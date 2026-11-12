@@ -6,7 +6,8 @@ import unittest
 from app.consultant import ConsultantUnavailable
 from consultant_impl import EnergyConsultant
 from dialog_memory import (active_scope, check_lead_against_memory, empty_memory,
-                           indexed_messages, known_fields, merge_memory, manager_summary)
+                           indexed_messages, known_fields, merge_memory, manager_summary,
+                           verified_memory_updates)
 
 
 def fact(field, value, source, quote, **changes):
@@ -17,6 +18,54 @@ def fact(field, value, source, quote, **changes):
 
 
 class MemoryTests(unittest.TestCase):
+    def test_optional_extraction_normalizes_scope_and_preserves_user_wording(self):
+        messages = [{'message_id':'u', 'role':'user', 'content':'Хочу уменьшить счета.'}]
+        state, warnings = verified_memory_updates(None, [fact('goal', 'сэкономить', 'u',
+            messages[0]['content'], scope='client')], messages)
+        self.assertEqual(warnings, [])
+        self.assertEqual(state['facts'][0]['value'], 'Хочу уменьшить счета.')
+        self.assertEqual(state['facts'][0]['scope'], 'default')
+
+    def test_bad_optional_fact_does_not_discard_verified_sibling(self):
+        messages = [{'message_id':'u', 'role':'user', 'content':'Мощность 800 кВт.'}]
+        state, warnings = verified_memory_updates(None, [
+            fact('company', 'Выдумка', 'u', 'Компания Выдумка'),
+            fact('connected_power', '800 кВт', 'u', messages[0]['content']),
+        ], messages)
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual([f['field'] for f in state['facts']], ['connected_power'])
+
+    def test_evening_does_not_establish_day_night_split(self):
+        messages = [{'message_id':'u', 'role':'user', 'content':'Мы стали больше работать вечером'}]
+        state, warnings = verified_memory_updates(None, [fact('day_night_split',
+            'больше работаем вечером', 'u', messages[0]['content'])], messages)
+        self.assertEqual(state['facts'], [])
+        self.assertEqual(len(warnings), 1)
+
+    def test_unknown_day_night_split_is_remembered(self):
+        messages = [{'message_id':'u', 'role':'user', 'content':'Не знаю'}]
+        state, warnings = verified_memory_updates(None, [fact('day_night_split',
+            None, 'u', 'Не знаю', status='unknown')], messages)
+        self.assertEqual(warnings, [])
+        self.assertIn('day_night_split', known_fields(state))
+
+    def test_invalid_optional_metadata_does_not_trigger_answer_regeneration(self):
+        class Client:
+            calls = 0
+            async def complete(self, messages):
+                self.calls += 1
+                return json.dumps({'answer':'Продолжим.', 'kind':'contacts', 'state':'chatting',
+                    'lead':None, 'evidence_ids':[], 'follow_up_question':None,
+                    'memory_updates':[{'field':'phone', 'value':'выдумка'}]})
+        class Search:
+            async def search(self, *args, **kwargs): return {'hits':[]}
+        client = Client()
+        reply = asyncio.run(EnergyConsultant(client)(text='Продолжим', history=[], search=Search()))
+        self.assertEqual(reply.text, 'Продолжим.')
+        self.assertEqual(client.calls, 1)
+        self.assertEqual(len(reply.memory_warnings), 1)
+        self.assertEqual(reply.dialog_memory['facts'], [])
+
     def setUp(self):
         self.messages = [
             {'message_id':'u1','role':'user','content':'Я Тест Тестов, компания Тест. Телефон +79990000000. Мощность 800 кВт.'},

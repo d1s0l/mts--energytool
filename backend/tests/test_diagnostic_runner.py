@@ -16,6 +16,15 @@ from evaluate_dialogs import run
 
 
 class DiagnosticRunnerTests(unittest.TestCase):
+    def test_trace_preserves_request_before_repair_mutates_messages(self):
+        client=EvaluationClient(ModelConfig('http://provider','test','test'),interval=0,trace=True)
+        messages=[{'role':'user','content':'Original request'}]
+        with patch.object(client,'_request',return_value='Answer'):
+            asyncio.run(client.complete(messages))
+        messages.append({'role':'user','content':'Repair request'})
+        messages[0]['content']='Changed'
+        self.assertEqual(client.traces[0]['messages'],[{'role':'user','content':'Original request'}])
+
     def test_trace_contains_prompt_and_output_but_not_http_credentials(self):
         client=EvaluationClient(ModelConfig('http://provider','never-record-this-key','test'),interval=0,trace=True)
         with patch.object(client,'_request',return_value='Final answer'):

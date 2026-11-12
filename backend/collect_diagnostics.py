@@ -25,6 +25,8 @@ def main():
     from dotenv import dotenv_values
     env=os.environ.copy()
     env.update({k:v for k,v in dotenv_values(args.env).items() if v is not None})
+    if os.environ.get('TEST_DATABASE_URL'):
+        env['TEST_DATABASE_URL']=os.environ['TEST_DATABASE_URL']
     env['PYTHONPATH']=os.pathsep.join([str(root/'backend'),str(root/'backend/tests'),str(root/'rag'),str(root)])
     env['PYTHONUNBUFFERED']='1'
     commit=subprocess.check_output(['git','rev-parse','--short','HEAD'],cwd=root,text=True).strip()
@@ -111,7 +113,18 @@ def main():
             from psycopg.conninfo import make_conninfo
             env['TEST_DATABASE_URL']=make_conninfo(db,connect_timeout=5)
             # Existing fixtures create/drop only their own temporary schemas.
-            stage('postgres-api',[sys.executable,'-m','pytest','-q','--tb=short'],root/'backend')
+            import psycopg
+            try:
+                with psycopg.connect(env['TEST_DATABASE_URL']):
+                    pass
+            except psycopg.Error as exc:
+                (output/'postgres-api.log').write_text(
+                    f'DATABASE UNAVAILABLE ({type(exc).__name__}). Start the dedicated test PostgreSQL or set TEST_DATABASE_URL.\n',encoding='utf-8')
+                manifest['stages'].append({'name':'postgres-api','status':'unavailable'})
+                save_manifest()
+                print('PostgreSQL unavailable; API tests have not run.',flush=True)
+            else:
+                stage('postgres-api',[sys.executable,'-m','pytest','-q','--tb=short'],root/'backend')
         else:
             (output/'postgres-api.log').write_text(
                 'SKIPPED: TEST_DATABASE_URL/DATABASE_URL or backend dev dependencies missing.\n',encoding='utf-8')
@@ -127,9 +140,14 @@ def main():
                 code=stage(name,[sys.executable,str(root/'backend'/script),*common,
                     '--output',str(output/f'{name}.json'),*more])
                 if code:
-                    manifest['status']=f'{name}_incomplete';save_manifest()
-                    print(f'Run stopped. Resume with the same command. Reports: {output}',flush=True)
-                    return code
+                    report_path=output/f'{name}.json'
+                    state=json.loads(report_path.read_text()).get('status') if report_path.exists() else 'crashed'
+                    if state in {'rate_limited','interrupted','provider_unavailable','crashed'}:
+                        manifest['status']=f'{name}_incomplete';save_manifest()
+                        print(f'Run stopped. Resume with the same command. Reports: {output}',flush=True)
+                        return code
+                    # Content/format failures in independent questions do not hide dialogue diagnostics.
+                    print(f'{name}: some cases failed; continuing to the next independent stage.',flush=True)
         manifest['status']='complete' if all(s.get('returncode')==0 for s in manifest['stages']) else 'partial'
         save_manifest()
         print(f'Reports ready: {output}',flush=True)

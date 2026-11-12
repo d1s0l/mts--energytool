@@ -163,3 +163,42 @@ def manager_summary(memory, fallback):
         lines.append(f"{labels[fact['field']]}: {value}")
     # Current validated values take precedence over older quotes in a draft summary.
     return ('Актуальные данные со слов клиента:\n' + '\n'.join(lines)) if lines else fallback
+
+
+def verified_memory_updates(previous, updates, messages):
+    """Accept independently verified facts; optional extraction cannot abort the answer."""
+    state = merge_memory(previous, [], messages)
+    warnings = []
+    if not isinstance(updates, list):
+        return state, ['memory_updates_not_a_list']
+    for index, raw in enumerate(updates[:24]):
+        try:
+            if not isinstance(raw, dict):
+                raise ValueError('invalid_item')
+            item = dict(raw)
+            field = item.get('field')
+            if field in CLIENT_FIELDS:
+                item['scope'] = 'client'
+            elif item.get('scope') in {None, 'client', 'default'}:
+                item['scope'] = active_scope(state)
+            # Preserve the actual user wording rather than the model's paraphrase.
+            if (field not in {'phone', 'full_name', 'company', 'active_object'}
+                    and item.get('status') in {'provided', 'tentative'}
+                    and isinstance(item.get('quote'), str)
+                    and (not isinstance(item.get('value'), str)
+                         or item['value'].casefold() not in item['quote'].casefold())):
+                item['value'] = item['quote']
+            quote = item.get('quote', '')
+            if field == 'day_night_split' and item.get('status') in {'provided', 'tentative'} and not (
+                    re.search(r'день|дневн', quote, re.I) and re.search(r'ноч', quote, re.I)):
+                raise ValueError('day_night_split_requires_both_zones')
+            if field == 'daytime_consumption' and item.get('status') in {'provided', 'tentative'} and not re.search(r'днем|днём|дневн', quote, re.I):
+                raise ValueError('daytime_load_requires_daytime_statement')
+            state = merge_memory(state, [item], messages)
+        except (ValueError, TypeError, KeyError) as exc:
+            # Static validation messages, never the rejected value or a model exception body.
+            reason = str(exc) if type(exc) is ValueError else type(exc).__name__
+            warnings.append(f'item_{index}: {reason}')
+    if len(updates) > 24:
+        warnings.append('memory_updates_truncated_to_24')
+    return state, warnings

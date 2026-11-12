@@ -31,6 +31,7 @@ class ConsultantReply(BaseModel):
     lead: dict[str, str] | None = None
     lead_summary: str | None = None
     dialog_memory: dict | None = None
+    memory_warnings: list[str] = Field(default_factory=list)
     requested_action: Literal["none", "create_lead"] = "none"
 
 

@@ -192,6 +192,7 @@ async def send_message(session_id: UUID, body: SendMessageIn, request: Request):
             debug = {
                 "total_ms": round((perf_counter() - started) * 1000, 3),
                 "lead_id": str(lead_id) if lead_id else None,
+                "memory_warnings": reply.memory_warnings,
                 "search_ms": reply.search_ms,
                 "generation_ms": reply.generation_ms,
                 "sources": [source.model_dump(mode="json") for source in reply.sources],

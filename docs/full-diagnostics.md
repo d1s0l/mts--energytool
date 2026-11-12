@@ -4,6 +4,7 @@
 
 ```sh
 cd /root/folder_for_q/mts--energytool
+source .venv/bin/activate
 python -m pip install -r backend/requirements-dev.txt
 bash /root/folder_for_q/run_full_check.sh
 ```
@@ -16,6 +17,13 @@ python backend/collect_diagnostics.py --env /path/to/env \
   --kb /path/to/knowledge-base.zip --questions /path/to/demo_questions.csv \
   --output-root /tmp/energytool-diagnostics
 ```
+
+Локальный launcher пытается поднять отдельный PostgreSQL из compose.test.yaml
+на 127.0.0.1:55432, проект Compose energytool-diagnostics. Данные находятся в tmpfs;
+основная БД приложения не используется. Нужен работающий Docker с Compose.
+Можно задать TEST_DATABASE_URL самостоятельно или отключить автозапуск через
+ENERGYTOOL_SKIP_DB_BOOTSTRAP=1. Ошибка запуска записывается в
+quality-results/postgres-bootstrap.log; недоступность БД отмечается в отчёте.
 
 Обычный прогон включает:
 
@@ -56,7 +64,8 @@ Env-файл не копируется. JSON содержит тестовые �
 обычно нужно около 15–30 минут, но время зависит от модели и повторов. При 429
 прогон останавливается и запоминает cooldown. Повтор той же команды продолжает
 незавершённый этап; ранее успешные вопросы/ходы не запрашиваются заново. Ctrl+C
-сохраняет завершённые результаты. Если изменён код, модель/поисковые настройки или
+сохраняет завершённые результаты. Ошибки содержания/формата отдельных ответов
+не отменяют следующий независимый этап проверки диалогов. Если изменён код, модель/поисковые настройки или
 база, отпечаток меняется и создаётся новая папка.
 
 `--offline` отключает обращения к модели. Пропущенная проверка БД даёт общий статус

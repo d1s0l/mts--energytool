@@ -61,7 +61,7 @@ def run(report, output, consultant, client, search):
                     {'role': 'assistant', 'content': reply.text, 'message_id': f'{name}:assistant:{index}'},
                 ])
                 row.update(status='answered', answer=reply.text, memory_after=scenario['memory'],
-                           action=reply.requested_action, lead=reply.lead, summary=reply.lead_summary,
+                           action=reply.requested_action, memory_warnings=reply.memory_warnings, lead=reply.lead, summary=reply.lead_summary,
                            sources=[s.model_dump() for s in reply.sources])
             except ModelRateLimited as exc:
                 row.update(status='rate_limited', retry_after_seconds=math.ceil(exc.retry_after))
