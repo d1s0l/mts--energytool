@@ -104,12 +104,19 @@ class ModelConfig:
     @classmethod
     def from_env(cls):
         def setting(*names):
-            return next((os.environ[n].strip() for n in names if os.environ.get(n, "").strip()), "")
+            return next(
+                (
+                    os.environ[n].strip()
+                    for n in names
+                    if os.environ.get(n, "").strip() and os.environ[n].strip() != n
+                ),
+                "",
+            )
 
         config = cls(
-            base_url=setting("LLM_BASE_URL", "OPENAI_BASE_URL").rstrip("/"),
+            base_url=setting("LLM_BASE_URL", "BASE_URL", "OPENAI_BASE_URL").rstrip("/"),
             api_key=setting("LLM_API_KEY", "OPENAI_API_KEY"),
-            model=setting("LLM_MODEL", "OPENAI_MODEL", "GEN_MODEL"),
+            model=setting("LLM_MODEL", "GEN_MODEL", "OPENAI_MODEL") or "qwen/qwen3.8-27b",
             temperature=float(setting("TEMPERATURE") or "0"),
             max_tokens=int(setting("MAX_TOKENS") or "1600"),
             timeout=float(setting("LLM_TIMEOUT") or "20"),
@@ -248,9 +255,13 @@ def validate_answer_support(data, evidence, ids, messages):
             raise ValueError("Invalid answer_support item")
         text, source, quote = item.get("text"), item.get("evidence_id"), item.get("quote")
         if (
-            not isinstance(text, str) or not text.strip()
-            or not isinstance(source, str) or source not in ids
-            or not isinstance(quote, str) or not quote.strip() or len(quote) > 4000
+            not isinstance(text, str)
+            or not text.strip()
+            or not isinstance(source, str)
+            or source not in ids
+            or not isinstance(quote, str)
+            or not quote.strip()
+            or len(quote) > 4000
         ):
             raise ValueError("Each answer_support item needs text, a cited ID and a quote")
         # Markdown emphasis and wrapping do not change a quoted statement.
@@ -272,9 +283,7 @@ def append_follow_up(data, messages):
         messages[-1]["content"],
         re.I,
     )
-    required = (
-        data.get("kind") == "clarify" or data.get("state") == "awaiting_contacts"
-    )
+    required = data.get("kind") == "clarify" or data.get("state") == "awaiting_contacts"
     if stop or data.get("lead") is not None:
         return answer
     if question is None:
@@ -303,10 +312,14 @@ def validate_device_compatibility(text, answer, kind):
         return
     equipment = re.search(r"прибор|сч[её]тчик|sim|сим[ -]?карт|систем.{0,15}уч[её]та", text, re.I)
     integration = re.search(r"подключ|совместим|замен|менять", text, re.I)
-    if equipment and integration and not re.search(
-        r"совместим|провер|уточн|зависит|модел|схем|не поддерж|невозмож|не подключ",
-        answer,
-        re.I,
+    if (
+        equipment
+        and integration
+        and not re.search(
+            r"совместим|провер|уточн|зависит|модел|схем|не поддерж|невозмож|не подключ",
+            answer,
+            re.I,
+        )
     ):
         raise ValueError(
             "Device integration needs an object-specific compatibility caveat: "

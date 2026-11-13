@@ -60,9 +60,16 @@ def output(**changes):
         "follow_up_question": "Сколько приборов нужно подключить?",
     }
     data.update(changes)
-    data.setdefault("answer_support", [{
-        "text": data["answer"], "evidence_id": "fact", "quote": HIT["text"],
-    }])
+    data.setdefault(
+        "answer_support",
+        [
+            {
+                "text": data["answer"],
+                "evidence_id": "fact",
+                "quote": HIT["text"],
+            }
+        ],
+    )
     return json.dumps(data, ensure_ascii=False)
 
 
@@ -94,8 +101,11 @@ class ConsultantTests(unittest.TestCase):
         self.assertNotIn("?", reply.text)
 
     def test_missing_or_fabricated_evidence_support_is_repaired(self):
-        for support in (None, [], [{"text": "Да.", "evidence_id": "fact",
-                                    "quote": "Неподтверждённая цитата"}]):
+        for support in (
+            None,
+            [],
+            [{"text": "Да.", "evidence_id": "fact", "quote": "Неподтверждённая цитата"}],
+        ):
             with self.subTest(support=support):
                 client = Client([output(answer_support=support), output()])
                 asyncio.run(EnergyConsultant(client)(text="Цена?", history=[], search=Search()))
@@ -111,24 +121,43 @@ class ConsultantTests(unittest.TestCase):
         self.assertNotIn("фасаде", reply.text)
 
     def test_number_from_another_claim_cannot_support_current_claim(self):
-        client = Client([
-            output(answer_support=[{"text": json.loads(output())["answer"],
-                                    "evidence_id": "fact", "quote": "Итог зависит от проекта."}]),
-            output(),
-        ])
+        client = Client(
+            [
+                output(
+                    answer_support=[
+                        {
+                            "text": json.loads(output())["answer"],
+                            "evidence_id": "fact",
+                            "quote": "Итог зависит от проекта.",
+                        }
+                    ]
+                ),
+                output(),
+            ]
+        )
         asyncio.run(EnergyConsultant(client)(text="Цена?", history=[], search=Search()))
         self.assertEqual(client.calls, 2)
 
     def test_user_object_numbers_can_be_repeated_without_kb_claim(self):
         text = "Для ваших 40 приборов итог зависит от проекта."
-        client = Client([output(
-            answer=text, follow_up_question=None,
-            answer_support=[{"text": text, "evidence_id": "fact",
-                             "quote": "Итог зависит от проекта."}],
-        )])
-        reply = asyncio.run(EnergyConsultant(client)(
-            text="У нас 40 приборов, сколько стоит?", history=[], search=Search(),
-        ))
+        client = Client(
+            [
+                output(
+                    answer=text,
+                    follow_up_question=None,
+                    answer_support=[
+                        {"text": text, "evidence_id": "fact", "quote": "Итог зависит от проекта."}
+                    ],
+                )
+            ]
+        )
+        reply = asyncio.run(
+            EnergyConsultant(client)(
+                text="У нас 40 приборов, сколько стоит?",
+                history=[],
+                search=Search(),
+            )
+        )
         self.assertEqual(reply.text, text)
 
     def test_evidence_markdown_and_wrapping_do_not_reject_a_verbatim_quote(self):
@@ -148,7 +177,8 @@ class ConsultantTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validate_device_compatibility(question, "Да, всё подключается.", "product")
                 validate_device_compatibility(
-                    question, "Возможность есть; совместимость проверим по моделям приборов.",
+                    question,
+                    "Возможность есть; совместимость проверим по моделям приборов.",
                     "product",
                 )
         validate_device_compatibility("Год выпуска счётчика распознаётся?", "Да.", "product")
@@ -275,6 +305,22 @@ class ConsultantTests(unittest.TestCase):
             self.assertNotIn("secret", repr(cfg))
             self.assertEqual(cfg.base_url, "http://proxy/v1")
 
+    def test_platform_base_url_and_default_model(self):
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_BASE_URL": "LLM_BASE_URL",
+                "BASE_URL": "http://platform.test/v1/",
+                "LLM_API_KEY": "platform-key",
+                "LLM_MODEL": "LLM_MODEL",
+            },
+            clear=True,
+        ):
+            config = ModelConfig.from_env()
+            self.assertEqual(config.base_url, "http://platform.test/v1")
+            self.assertEqual(config.model, "qwen/qwen3.8-27b")
+            self.assertNotIn("platform-key", repr(config))
+
     def test_gateway_uses_platform_model_and_rejects_truncation(self):
         cfg = ModelConfig(
             base_url="http://proxy",
@@ -372,11 +418,13 @@ def test_default_consultant_connects_to_existing_session_and_lead_api(tmp_path, 
                 "state": "awaiting_contacts",
                 "lead": None,
                 "evidence_ids": [payload["evidence"][0]["id"]],
-                "answer_support": [{
-                    "text": "Платформа помогает учитывать потребление по складам.",
-                    "evidence_id": payload["evidence"][0]["id"],
-                    "quote": "Платформа помогает учитывать потребление по складам.",
-                }],
+                "answer_support": [
+                    {
+                        "text": "Платформа помогает учитывать потребление по складам.",
+                        "evidence_id": payload["evidence"][0]["id"],
+                        "quote": "Платформа помогает учитывать потребление по складам.",
+                    }
+                ],
                 "follow_up_question": "Сколько складов нужно подключить?",
             },
             ensure_ascii=False,

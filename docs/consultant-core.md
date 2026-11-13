@@ -8,7 +8,11 @@ structured outputs и tool calling не требует. Контракт JSON п
 ## Настройка
 
 Для API и сабмита задайте `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`.
-Поддержаны альтернативы `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL`/`GEN_MODEL`.
+Поддержаны альтернативы `BASE_URL`/`OPENAI_BASE_URL`, `OPENAI_API_KEY`, `GEN_MODEL`/`OPENAI_MODEL`.
+Без имени модели используется `qwen/qwen3.8-27b`, как в примере организаторов.
+Сабмит читает также `train.csv`, `knowledge_base.zip`, `kb.zip`; ищет входные
+файлы в `DATA_DIR`, относительно скрипта и в рабочем каталоге.
+CSV содержит колонки `id,answer`, все поля в кавычках, ответы без переносов строк.
 Адрес уже содержит необходимый префикс (например `/v1`); второй префикс не добавляется.
 `TEMPERATURE`, `MAX_TOKENS`, `MAX_WORKERS`, `LLM_TIMEOUT` задают генерацию и нагрузку.
 Без URL, ключа или идентификатора генератора веб-сервис сообщает неготовность,

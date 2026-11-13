@@ -65,6 +65,15 @@ def stage(name):
         raise
 
 
+def find_file(data_dir: Path, *names: str) -> Path:
+    for root in (data_dir, Path(__file__).resolve().parent / data_dir, Path.cwd()):
+        for name in names:
+            path = root / name
+            if path.is_file():
+                return path
+    raise FileNotFoundError("Platform input file not found: " + ", ".join(names))
+
+
 def read_questions(path: Path) -> list[tuple[str, str]]:
     with path.open(encoding="utf-8-sig", newline="") as stream:
         reader = csv.DictReader(stream)
@@ -199,10 +208,11 @@ def write_submission(path: Path, questions: list[tuple[str, str]], answers: list
             mode="w", encoding="utf-8", newline="", dir=path.parent, delete=False
         ) as stream:
             temporary = Path(stream.name)
-            writer = csv.writer(stream)
+            writer = csv.writer(stream, quoting=csv.QUOTE_ALL, lineterminator="\n")
             writer.writerow(["id", "answer"])
             writer.writerows(
-                (qid, answer) for (qid, _), answer in zip(questions, answers, strict=True)
+                (qid, " ".join(answer.split()))
+                for (qid, _), answer in zip(questions, answers, strict=True)
             )
         temporary.replace(path)
     finally:
@@ -231,7 +241,7 @@ async def run(
     if not 1 <= max_workers <= 8:
         raise ValueError("MAX_WORKERS must be between 1 and 8")
     with stage("read_questions"):
-        questions = read_questions(data_dir / "questions.csv")
+        questions = read_questions(find_file(data_dir, "questions.csv", "train.csv"))
     fallback = ["Временный технический сбой. Повторите вопрос." for _ in questions]
     with stage("initial_save"):
         write_submission(output, questions, fallback)
@@ -243,7 +253,9 @@ async def run(
             consultant = load_consultant()
     with stage("initialize_rag"):
         engine = await asyncio.to_thread(
-            KnowledgeSearch, data_dir / "knowledge-base.zip", Config.from_env()
+            KnowledgeSearch,
+            find_file(data_dir, "knowledge-base.zip", "knowledge_base.zip", "kb.zip"),
+            Config.from_env(),
         )
     answers = await answer_questions(
         questions,
@@ -270,7 +282,11 @@ def main() -> int:
         asyncio.run(
             run(
                 None,
-                Path(os.getenv("DATA_DIR", "data")),
+                Path(
+                    (os.getenv("DATA_DIR", "").strip() or "data")
+                    if os.getenv("DATA_DIR") != "DATA_DIR"
+                    else "data"
+                ),
                 Path("submission.csv"),
                 int(os.getenv("MAX_WORKERS", "3")),
             )
