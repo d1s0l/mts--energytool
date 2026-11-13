@@ -7,7 +7,7 @@ from app.consultant import ConsultantUnavailable
 from consultant_impl import EnergyConsultant
 from dialog_memory import (active_scope, check_lead_against_memory, empty_memory,
                            indexed_messages, known_fields, merge_memory, manager_summary,
-                           verified_memory_updates, select_active_object)
+                           verified_memory_updates, select_active_object, refresh_contact_permission)
 
 
 def fact(field, value, source, quote, **changes):
@@ -18,6 +18,23 @@ def fact(field, value, source, quote, **changes):
 
 
 class MemoryTests(unittest.TestCase):
+    def test_explicit_refusal_survives_missing_model_updates_and_can_be_revoked(self):
+        messages=[{'message_id':'1','role':'user','content':'Телефон пока не готов оставлять.'}]
+        state=refresh_contact_permission(empty_memory(),messages)
+        self.assertEqual(state['facts'][0]['status'],'declined')
+        state,warnings=verified_memory_updates(state,[],messages)
+        self.assertEqual(state['facts'][0]['status'],'declined')
+        messages.append({'message_id':'2','role':'user','content':'Передумал, оформите заявку.'})
+        state=refresh_contact_permission(state,messages)
+        self.assertEqual(state['facts'][0]['status'],'provided')
+        self.assertEqual(state['facts'][0]['source_message_id'],'2')
+
+    def test_unrelated_literal_quote_cannot_grant_contact_permission(self):
+        messages=[{'message_id':'1','role':'user','content':'Хочу автоматизировать сбор.'}]
+        self.assertEqual(refresh_contact_permission(empty_memory(),messages),empty_memory())
+        with self.assertRaises(ValueError):
+            merge_memory(None,[fact('contact_permission','Хочу','1',messages[0]['content'])],messages)
+
     def test_return_to_inflected_object_name_selects_existing_canonical_scope(self):
         messages=[{'message_id':'1','role':'user','content':'Первый склад: 800 кВт'},
                   {'message_id':'2','role':'user','content':'Второй склад: 300 кВт'},
