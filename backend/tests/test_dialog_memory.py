@@ -7,7 +7,7 @@ from app.consultant import ConsultantUnavailable
 from consultant_impl import EnergyConsultant
 from dialog_memory import (active_scope, check_lead_against_memory, empty_memory,
                            indexed_messages, known_fields, merge_memory, manager_summary,
-                           verified_memory_updates)
+                           verified_memory_updates, select_active_object)
 
 
 def fact(field, value, source, quote, **changes):
@@ -18,6 +18,37 @@ def fact(field, value, source, quote, **changes):
 
 
 class MemoryTests(unittest.TestCase):
+    def test_return_to_inflected_object_name_selects_existing_canonical_scope(self):
+        messages=[{'message_id':'1','role':'user','content':'Первый склад: 800 кВт'},
+                  {'message_id':'2','role':'user','content':'Второй склад: 300 кВт'},
+                  {'message_id':'3','role':'user','content':'Вернёмся к первому складу: что уже известно?'}]
+        state=merge_memory(None,[
+            fact('connected_power','800 кВт','1',messages[0]['content'],scope='Первый склад'),
+            fact('connected_power','300 кВт','2',messages[1]['content'],scope='Второй склад'),
+            fact('active_object','Второй склад','2',messages[1]['content']),
+        ],messages)
+        selected=select_active_object(state,messages)
+        self.assertEqual(active_scope(selected),'Первый склад')
+        self.assertEqual(active_scope(state),'Второй склад')
+        actual=next(f for f in selected['facts'] if f['field']=='active_object')
+        self.assertEqual(actual['quote'],'первому складу')
+        self.assertEqual(actual['source_message_id'],'3')
+        selected,warnings=verified_memory_updates(selected,[
+            fact('active_object','первому складу','3','первому складу')],messages)
+        self.assertEqual(warnings,[])
+        self.assertEqual(active_scope(selected),'Первый склад')
+
+    def test_ambiguous_object_references_do_not_switch_scope(self):
+        messages=[{'message_id':'1','role':'user','content':'Первый склад: 800 кВт'},
+                  {'message_id':'2','role':'user','content':'Второй склад: 300 кВт'},
+                  {'message_id':'3','role':'user','content':'Сравним первый склад со вторым складом.'}]
+        state=merge_memory(None,[
+            fact('connected_power','800 кВт','1',messages[0]['content'],scope='Первый склад'),
+            fact('connected_power','300 кВт','2',messages[1]['content'],scope='Второй склад'),
+            fact('active_object','Второй склад','2',messages[1]['content']),
+        ],messages)
+        self.assertEqual(select_active_object(state,messages),state)
+
     def test_active_object_is_applied_before_its_facts_regardless_of_json_order(self):
         messages = [{'message_id':'u', 'role':'user', 'content':'Второй склад: 300 кВт'}]
         state, warnings = verified_memory_updates(None, [

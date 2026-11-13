@@ -18,7 +18,7 @@ except ModuleNotFoundError:
 
 
 from dialog_memory import (
-    active_scope, check_lead_against_memory, indexed_messages, known_fields, merge_memory, remember_question, question_field, manager_summary, verified_memory_updates,
+    active_scope, check_lead_against_memory, indexed_messages, known_fields, merge_memory, remember_question, question_field, manager_summary, verified_memory_updates, select_active_object, contact_permission, refresh_contact_permission,
 )
 
 
@@ -35,6 +35,8 @@ POLICY = """Ты консультант МТС EnergyTool. Отвечай по-�
 Не перечисляй целевые сегменты и состав поставки, если вопрос о конкретной функции.
 Не добавляй ограничения частных домов, когда клиент спрашивает только про кровлю
 и не сообщил, что речь о частном доме. Не дублируй одну мысль разными предложениями.
+Не описывай содержание демонстрации, если evidence подтверждает лишь наличие демодоступа.
+Не называй параметр «единственным недостающим», если остальные сведения не проверены.
 Не обещай, что причина станет очевидна сразу. Убери пустые заверения вроде
 «ответ почти всегда виден сразу»: лучше объясни конкретное действие клиенту.
 Не вставляй справочные диапазоны мощности, цены и сроки, если их не спрашивали
@@ -398,6 +400,9 @@ def validate_project_claims(answer, plan):
                 and re.search(r"прибор|счетчик", sentence)):
             raise ValueError("Do not invent a mandatory meter wiring/layout per workshop; describe the capability and ask about existing meters")
         if plan and plan["field"] == "daytime_consumption":
+            if re.search(r'экономик[^.!?]{0,25}слаб|эффект[^.!?]{0,25}меньш|перекрываем[^.!?]{0,25}меньш', sentence):
+                if not re.search(r'(?:если|при условии)[^.!?]{0,100}(?:дневн|днем)', sentence):
+                    raise ValueError('Unknown daytime load: compare economics only conditionally on daytime consumption, not evening work alone')
             if re.search(r"смысл есть|станция (?:все равно )?снижает|совпадение[^.!?]{0,40}будет (?:небольш|мал)|экономия будет меньше", sentence):
                 if not re.search(r"если|может|при условии|неизвест|нельзя", sentence):
                     raise ValueError("Daytime load is unknown: do not assert benefit or its size; explain conditionally")
@@ -436,6 +441,14 @@ def append_follow_up(data, messages, *, allow_no_follow_up=False):
     for message in messages[-8:-1]:
         if message["role"] == "assistant" and question.casefold() in message["content"].casefold():
             raise ValueError("Repeated follow_up_question: use the existing dialog context")
+    # The model sometimes embeds an equivalent question with an introductory phrase.
+    # Keep only the separate, validated follow-up in the rendered answer.
+    if '?' in answer:
+        sentences = re.split(r'(?<=[.!?])\s+', answer)
+        tail = sentences[-1]
+        if tail.endswith('?'):
+            body = ' '.join(sentences[:-1]).strip()
+            return (body + '\n\n' if body else '') + question
     return answer if question in answer else answer + "\n\n" + question
 
 
@@ -451,9 +464,9 @@ def reconcile_follow_up(data, messages, memory):
                    if m['role'] == 'assistant' and '?' in m['content']}
     pending.discard(None)
     if field and (field in known or field in pending):
-        question = data['follow_up_question'].strip()
-        if data['answer'].rstrip().endswith(question):
-            data['answer'] = data['answer'].rstrip()[:-len(question)].rstrip()
+        sentences = re.split(r'(?<=[.!?])\s+', data['answer'].strip())
+        if sentences[-1].endswith('?'):
+            data['answer'] = ' '.join(sentences[:-1]).strip()
         data['follow_up_question'] = None
         return True
     # A factual correction need not restart an unanswered qualification question.
@@ -505,18 +518,11 @@ def contact_intent(quote, messages):
     refused = False
     allowed = False
     for text in users:
-        if re.search(
-            r"не (?:хочу|готов|буду).{0,50}(?:телефон|контакт|заявк)|не звоните|без звонк",
-            text,
-            re.I,
-        ):
+        permission = contact_permission(text)
+        if permission and permission[0] == 'declined':
             refused = True
             allowed = False
-        elif re.search(
-            r"(?:хочу|готов|давайте|оформите|оставлю).{0,40}(?:заявк|контакт|телефон)|свяжитесь|позвоните",
-            text,
-            re.I,
-        ):
+        elif permission and permission[0] == 'provided':
             refused = False
             allowed = True
         elif not refused and re.search(r"\+?\d[\d ()-]{8,30}\d", text):
@@ -590,6 +596,8 @@ class EnergyConsultant:
     async def __call__(self, *, text, history, search, memory=None, message_id=None):
         all_messages = indexed_messages(history, text, message_id)
         memory = merge_memory(memory, [], all_messages)
+        memory = select_active_object(memory, all_messages)
+        memory = refresh_contact_permission(memory, all_messages)
         messages = bounded_history(history, text)
         if messages is None and memory["facts"] and len(text) <= 12000:
             # Keep stable IDs, the latest turns and durable facts instead of resetting memory.
@@ -783,6 +791,8 @@ class EnergyConsultant:
                                 "не изобретай техническую схему. Сохрани "
                                 "существенные условия. Исправь ответ без новых фактов. "
                                 "Не спрашивай уже известные параметры."
+                                " Исправь только отмеченные ошибки, не расширяй список фактов "
+                                "и не добавляй новые объяснения. Не меняй корректные memory_updates."
                             ),
                         }
                     )
@@ -871,4 +881,7 @@ question_appropriate: вопрос двигает текущую консуль�
 автоматическое распознавание. Утверждение о внедрённом OCR требует прямого сообщения клиента.
 Если часть ответа недостаточна или неверна, укажи ровно что исправить и подтверждающий
 фрагмент evidence в issues. Не добавляй новых фактов. Не оценивай совпадение формулировок.
+Укажи все обнаруженные ошибки сразу, а не только первую. Отдельно проверь
+неподтверждённые обещания о содержании демодоступа и исчерпывающие формулировки
+«единственный недостающий параметр»: достаточность сведений проверяется по диалогу.
 """

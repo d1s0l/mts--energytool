@@ -26,6 +26,63 @@ def empty_memory():
     return {'schema_version': 1, 'revision': 0, 'facts': [], 'asked': []}
 
 
+def object_reference(text, scopes):
+    """Resolve a unique existing object name, allowing conservative Russian inflections."""
+    def stem(word):
+        word = word.casefold().replace('ё', 'е')
+        shortened = re.sub(r'(?:ому|ему|ого|его|ыми|ими|ый|ий|ой|ая|яя|ую|юю|ое|ее|ым|им|ом|ем|ам|ям|ах|ях|а|у|е|ы|и)$', '', word)
+        return shortened if len(shortened) >= 3 else word
+    words = list(re.finditer(r'[\w]+', text, re.UNICODE))
+    normalized = [stem(w.group()) for w in words]
+    matches = []
+    for scope in scopes:
+        tokens = [stem(w) for w in re.findall(r'[\w]+', scope, re.UNICODE)]
+        if not tokens:
+            continue
+        for n in range(len(words)-len(tokens)+1):
+            literal = text[words[n].start():words[n+len(tokens)-1].end()]
+            # A single word must match literally; no fuzzy organization/name guesses.
+            if normalized[n:n+len(tokens)] == tokens and (len(tokens) > 1 or literal.casefold() == scope.casefold()):
+                matches.append((scope, literal))
+                break
+    return matches[0] if len(matches) == 1 else None
+
+
+def select_active_object(memory, messages):
+    """A unique explicit reference selects an existing object before generation."""
+    scopes = {f['scope'] for f in memory['facts']} - {'client', 'default'}
+    current = messages[-1]
+    reference = object_reference(current['content'], scopes)
+    if not reference or reference[0] == active_scope(memory):
+        return memory
+    scope, quote = reference
+    return merge_memory(memory, [dict(field='active_object', scope='client', status='provided',
+        value=scope, quote=quote, source_message_id=current['message_id'])], messages)
+
+
+def contact_permission(text):
+    """Recognize explicit contact consent/refusal; other topics give no decision."""
+    refused = re.search(
+        r'не (?:хочу|готов|буду|дам|согласен|разрешаю).{0,50}(?:телефон|контакт|заявк|звон)|'
+        r'(?:телефон|контакт|заявк).{0,35}не (?:хочу|готов|буду|дам)|не звоните|без звонк', text, re.I)
+    if refused:
+        return 'declined', refused.group()
+    allowed = re.search(
+        r'(?:хочу|готов|давайте|оформите|оставлю|согласен).{0,40}(?:заявк|контакт|телефон)|свяжитесь|позвоните', text, re.I)
+    return ('provided', allowed.group()) if allowed else None
+
+
+def refresh_contact_permission(memory, messages):
+    current = messages[-1]
+    decision = contact_permission(current['content'])
+    if not decision:
+        return memory
+    status, quote = decision
+    return merge_memory(memory, [dict(field='contact_permission', scope='client', status=status,
+        value=quote if status == 'provided' else None, quote=quote,
+        source_message_id=current['message_id'])], messages)
+
+
 def merge_memory(previous, updates, messages):
     """Only quoted user statements can change facts; older turns cannot undo corrections."""
     memory = copy.deepcopy(previous or empty_memory())
@@ -66,13 +123,20 @@ def merge_memory(previous, updates, messages):
                     raise ValueError('Memory phone must match user input')
                 value = normalized(value)
             elif value.casefold() not in quote.casefold():
-                raise ValueError('Memory value must be a literal part of its quote')
+                scopes = {f['scope'] for f in memory['facts']} - {'client', 'default'}
+                reference = object_reference(quote, scopes) if field == 'active_object' else None
+                if not reference or reference[0] != value:
+                    raise ValueError('Memory value must be a literal part of its quote')
         elif status == 'unknown' and not re.search(r'не знаю|не помню|неизвест|нет данных|не могу сказать|не уверен', quote, re.I):
             raise ValueError('Unknown status requires a statement of uncertainty')
-        elif status == 'declined' and not re.search(r'не (?:хочу|буду|готов|дам|сообщ)|не звоните|отказ', quote, re.I):
+        elif status == 'declined' and not re.search(r'не (?:хочу|буду|готов|дам|сообщ)|не звоните|отказ|без звонк', quote, re.I):
             raise ValueError('Declined status requires a refusal')
         if status in {'unknown', 'declined'} and value is not None:
             raise ValueError('Unknown/declined values must be null')
+        if field == 'contact_permission':
+            decision = contact_permission(quote)
+            if not decision or decision[0] != status:
+                raise ValueError('Contact permission requires explicit contact consent or refusal')
         if field == 'active_object' and value not in {'default', None}:
             if not any(value.casefold() in text.casefold() for _, text in users.values()):
                 raise ValueError('Active object must be named by the user')
@@ -186,6 +250,11 @@ def verified_memory_updates(previous, updates, messages):
                 item['scope'] = 'client'
             elif item.get('scope') in {None, 'client', 'default'}:
                 item['scope'] = active_scope(state)
+            if field == 'active_object' and isinstance(item.get('quote'), str):
+                scopes = {f['scope'] for f in state['facts']} - {'client', 'default'}
+                reference = object_reference(item['quote'], scopes)
+                if reference and item.get('status') == 'provided':
+                    item['value'] = reference[0]
             # Preserve the actual user wording rather than the model's paraphrase.
             if (field not in {'phone', 'full_name', 'company', 'active_object'}
                     and item.get('status') in {'provided', 'tentative'}

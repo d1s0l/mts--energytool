@@ -416,6 +416,25 @@ class GroundingReviewTests(unittest.TestCase):
 
 
 class FollowUpAndTariffRegressionTests(unittest.TestCase):
+    def test_embedded_followup_with_intro_is_rendered_once(self):
+        draft=output(answer='Сравните счета. Уточните: месячный расход тоже вырос?',kind='clarify',
+                     follow_up_question='Месячный расход тоже вырос?',evidence_ids=[])
+        reply=asyncio.run(EnergyConsultant(Client([draft]))(text='Счёт вырос',history=[],search=Search()))
+        self.assertEqual(reply.text,'Сравните счета.\n\nМесячный расход тоже вырос?')
+        self.assertEqual(reply.text.count('?'),1)
+
+    def test_reworded_embedded_followup_uses_separate_question(self):
+        draft=output(answer='Количество известно. Нужна разбивка по складам или арендаторам?',kind='clarify',
+                     follow_up_question='Какую разбивку учёта нужно видеть?',evidence_ids=[])
+        reply=asyncio.run(EnergyConsultant(Client([draft]))(text='Что ещё нужно?',history=[],search=Search()))
+        self.assertEqual(reply.text,'Количество известно.\n\nКакую разбивку учёта нужно видеть?')
+
+    def test_evening_profile_does_not_establish_weaker_solar_economics(self):
+        with self.assertRaisesRegex(ValueError,'Unknown daytime load'):
+            validate_project_claims('Если основная нагрузка вечером, перекрываемая часть меньше, и экономика слабее.',
+                                    {'field':'daytime_consumption'})
+        validate_project_claims('Если днём потребление мало, эффект будет меньше.',{'field':'daytime_consumption'})
+
     def test_correction_succeeds_without_repeating_pending_model_question(self):
         draft=output(answer='Принято, 45 счётчиков.', kind='clarify', evidence_ids=[],
                      follow_up_question='Какие модели счётчиков стоят на складах?')
