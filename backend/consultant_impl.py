@@ -39,6 +39,8 @@ POLICY = """Ты консультант МТС EnergyTool. Отвечай по-�
 и не сообщил, что речь о частном доме. Не дублируй одну мысль разными предложениями.
 Не описывай содержание демонстрации, если evidence подтверждает лишь наличие демодоступа.
 Не называй параметр «единственным недостающим», если остальные сведения не проверены.
+Если база лишь перечисляет сведения для оценки, попроси недостающие сведения без
+придуманного объяснения, почему от каждого из них зависит техническая конфигурация.
 Не обещай, что причина станет очевидна сразу. Убери пустые заверения вроде
 «ответ почти всегда виден сразу»: лучше объясни конкретное действие клиенту.
 Не вставляй справочные диапазоны мощности, цены и сроки, если их не спрашивали
@@ -179,7 +181,7 @@ class ModelConfig:
             max_tokens=int(setting("MAX_TOKENS") or "1600"),
             timeout=float(setting("LLM_TIMEOUT") or "20"),
             max_workers=int(setting("MAX_WORKERS") or "3"),
-            reasoning_effort=setting("LLM_REASONING_EFFORT"),
+            reasoning_effort=setting("LLM_REASONING_EFFORT") or "low",
             min_interval=float(setting("LLM_MIN_INTERVAL") or "0"),
         )
         if (
@@ -800,7 +802,15 @@ class EnergyConsultant:
                     data['answer'] = answer
                     data['follow_up_question'] = None
                 if self.reviewer is not None and not lead_acknowledgement:
-                    await self.reviewer.check(data, answer, messages, evidence)
+                    filtered = await self.reviewer.check(data, answer, messages, evidence)
+                    if filtered is not None:
+                        data['answer'] = filtered
+                        answer = append_follow_up(data,messages,allow_no_follow_up=allow_no_follow_up)
+                        validate_tariff_claims(answer,data.get('follow_up_question'),messages)
+                        validate_project_claims(filtered,current_plan)
+                        validate_device_compatibility(text,answer,data['kind'])
+                        if not numbers(answer).issubset(numbers(supported)):
+                            raise ValueError('Unsupported number after sentence filtering')
                 return ConsultantReply(
                     text=answer.strip(),
                     dialog_memory=remember_question(next_memory, (current_plan["field"] if current_plan else question_field(data.get("follow_up_question"))) if "?" in answer else None, messages[-1]["message_id"]),
@@ -861,8 +871,12 @@ class GroundingReviewer:
         self.client = client
 
     async def check(self, data, answer, messages, evidence):
+        body=answer
+        question=data.get('follow_up_question')
+        if question and body.endswith(question):body=body[:-len(question)].rstrip()
         payload = {
             "dialog": messages, "answer": answer, "kind": data["kind"],
+            'answer_body':body,
             "answer_support": data.get("answer_support", []),
             "dialog_memory": data.get("verified_memory"),
             "follow_up_question": data.get("follow_up_question"),
@@ -881,6 +895,16 @@ class GroundingReviewer:
         if not isinstance(verdict, dict) or any(type(verdict.get(k)) is not bool for k in fields):
             raise ConsultantUnavailable("Invalid grounding review schema")
         if not all(verdict[k] for k in fields):
+            remove=verdict.get('remove_sentences')
+            remaining=verdict.get('remaining_verdict',{})
+            sentences=re.split(r'(?<=[.!?])\s+',body.strip())
+            if (verdict['question_appropriate'] and isinstance(remove,list) and 1<=len(remove)<=12
+                    and all(isinstance(s,str) and s in sentences for s in remove)
+                    and isinstance(remaining,dict) and all(remaining.get(k) is True for k in fields)):
+                kept=[s for s in sentences if s not in remove]
+                if kept and any(s.strip() for s in kept):
+                    log.info('Removed unsupported answer sentences after grounding review')
+                    return ' '.join(kept)
             issues = verdict.get("issues", [])
             detail = "; ".join(x[:250] for x in issues[:4] if isinstance(x, str)) if isinstance(issues, list) else ""
             raise ValueError("Grounding review rejected draft: " + detail)
@@ -891,6 +915,15 @@ REVIEW_POLICY = """Ты проверяешь ответ консультанта
 Используй только evidence для фактов о продуктах и сообщения пользователя для его ситуации.
 Верни JSON с четырьмя boolean: supported, relevant, conditions_preserved,
 question_appropriate, и issues: список конкретных ошибок (пустой при отсутствии ошибок).
+Если ошибку можно исправить ТОЛЬКО удалением целых предложений из answer_body,
+добавь remove_sentences: список этих дословных полных предложений и remaining_verdict
+с теми же четырьмя boolean для ОСТАВШЕГОСЯ текста с неизменённым follow_up_question.
+Приложение ничего не переписывает и не добавляет: оно может только убрать перечисленные
+предложения. Не удаляй существенные условия и оговорки. Подтверди все четыре remaining
+поля только если после удаления остаётся понятный, релевантный и полностью подтверждённый
+ответ с нужными условиями. Если вопрос нужно изменить или оставшийся текст недостаточен,
+не предлагай удаление. Не считай бытовые связки доказательством технической причинности:
+если evidence лишь перечисляет сведения для оценки, не подтверждай выдуманную причину.
 
 Проверенная dialog_memory содержит факты клиента с цитатами и статусом; её можно
 использовать вместе с текущими сообщениями. tentative не означает подтверждение.

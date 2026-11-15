@@ -15,13 +15,107 @@ from zipfile import ZipFile
 
 from app.consultant import ConsultantReply, ConsultantUnavailable
 from build_submission import build_submission
-from consultant_impl import EnergyConsultant, ModelClient, ModelConfig, MODEL_DEADLINE
+from consultant_impl import (
+    EnergyConsultant,
+    GroundingReviewer,
+    ModelClient,
+    ModelConfig,
+    MODEL_DEADLINE,
+)
 from dialog_memory import empty_memory, refresh_contact_phone
 from evaluate_dialogs import SCENARIOS, check_turn
 from verify_submission import audit_archive, validate_csv
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_review_can_only_remove_whole_sentences_from_a_confirmed_remaining_answer(self):
+        good = "Платформа собирает показания."
+        bad = "Она гарантирует экономию."
+
+        class Client:
+            calls = 0
+
+            async def complete(self, messages):
+                self.calls += 1
+                if self.calls == 1:
+                    return json.dumps(
+                        dict(
+                            answer=good + " " + bad,
+                            kind="product",
+                            state="chatting",
+                            evidence_ids=["fact"],
+                            lead=None,
+                            follow_up_question=None,
+                        )
+                    )
+                return json.dumps(
+                    dict(
+                        supported=False,
+                        relevant=True,
+                        conditions_preserved=True,
+                        question_appropriate=True,
+                        issues=["Гарантия не подтверждена"],
+                        remove_sentences=[bad],
+                        remaining_verdict=dict(
+                            supported=True,
+                            relevant=True,
+                            conditions_preserved=True,
+                            question_appropriate=True,
+                        ),
+                    )
+                )
+
+        class Search:
+            async def search(self, *args, **kwargs):
+                return {
+                    "hits": [
+                        dict(chunk_id="fact", source="kb.md", title="Учёт", text=good, score=1)
+                    ]
+                }
+
+        client = Client()
+        reply = asyncio.run(
+            EnergyConsultant(client, reviewer=GroundingReviewer(client))(
+                text="Что делает платформа?", history=[], search=Search()
+            )
+        )
+        self.assertEqual(reply.text, good)
+        self.assertEqual(client.calls, 2)
+
+    def test_sentence_filter_rejects_partial_deletions_or_lost_conditions(self):
+        good = "Ориентир не гарантирует результат."
+        for remove, conditions in [
+            (["не"], True),
+            ([good], False),
+            (["Выдуманное предложение."], True),
+        ]:
+
+            class Client:
+                async def complete(self, messages):
+                    return json.dumps(
+                        dict(
+                            supported=False,
+                            relevant=True,
+                            conditions_preserved=False,
+                            question_appropriate=True,
+                            issues=[],
+                            remove_sentences=remove,
+                            remaining_verdict=dict(
+                                supported=True,
+                                relevant=True,
+                                conditions_preserved=conditions,
+                                question_appropriate=True,
+                            ),
+                        )
+                    )
+
+            with self.subTest(remove=remove), self.assertRaises(ValueError):
+                asyncio.run(
+                    GroundingReviewer(Client()).check(
+                        dict(kind="product", evidence_ids=[], answer=good), good, [], {}
+                    )
+                )
+
     def test_batch_waits_and_retries_rate_limited_question(self):
         from app.consultant import ModelRateLimited
         from solution import answer_questions
