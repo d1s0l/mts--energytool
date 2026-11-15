@@ -12,7 +12,6 @@ export function Header() {
 
             <div className={styles.button__block}>
                 <DebugButton />
-                
                 <ThemeSwitcher />
             </div>
         </header>

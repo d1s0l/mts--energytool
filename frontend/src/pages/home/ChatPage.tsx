@@ -6,12 +6,16 @@ import { ThinkingLoader } from '@/entities/message/ui/ThinkingLoader/ThinkingLoa
 import { SendMessage } from '@/features/send-message/ui/SendMessage';
 import { useSendMessage } from '@/features/send-message/model/useSendMessage';
 import { useGetChatQuery } from '@/entities/session/api/sessionApi';
+import type { CreateSessionResponse } from '@/entities/session/model/session.types';
+import type { StoredSession } from '@/entities/session/model/sessionStorage';
 
 import styles from './ChatPage.module.scss';
 
 interface ChatPageContext {
   activeSessionId: string | null;
   setActiveSessionId: React.Dispatch<React.SetStateAction<string | null>>;
+  onSessionCreated: (session: CreateSessionResponse) => StoredSession;
+  onFirstMessage: (sessionId: string, text: string) => void;
 }
 
 interface LocalMessage {
@@ -23,9 +27,13 @@ interface LocalMessage {
 }
 
 export function ChatPage() {
-  const { activeSessionId, setActiveSessionId } = useOutletContext<ChatPageContext>();
+  const {
+    activeSessionId,
+    setActiveSessionId,
+    onSessionCreated,
+    onFirstMessage,
+  } = useOutletContext<ChatPageContext>();
 
-  const [isChatStarted, setIsChatStarted] = useState(false);
   const [localMessage, setLocalMessage] = useState<LocalMessage | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const activeSessionIdRef = useRef(activeSessionId);
@@ -45,9 +53,16 @@ export function ChatPage() {
   const { sendMessage, isLoading } = useSendMessage({
     activeSessionId,
     setActiveSessionId,
+    registerSession: onSessionCreated,
+    onFirstMessage,
   });
 
-  const { currentData, isLoading: isHistoryLoading } = useGetChatQuery(
+  const {
+    currentData,
+    isLoading: isHistoryLoading,
+    isFetching: isHistoryFetching,
+    isError: isHistoryError,
+  } = useGetChatQuery(
     activeSessionId ?? '',
     { skip: !activeSessionId },
   );
@@ -107,7 +122,16 @@ export function ChatPage() {
   };
 
   const handleSend = async (text: string) => {
-    setIsChatStarted(true);
+    if (
+      activeSessionId &&
+      chat &&
+      !isHistoryLoading &&
+      !isHistoryFetching &&
+      !isHistoryError &&
+      !chat.messages.some((message) => message.role === 'user')
+    ) {
+      onFirstMessage(activeSessionId, text);
+    }
 
     const messageId = crypto.randomUUID();
     let messageSessionId = activeSessionId;
@@ -167,7 +191,7 @@ export function ChatPage() {
     visibleLocalMessage?.status === 'sent' &&
     chat?.messages.some((message) => message.id === visibleLocalMessage.id);
 
-  const hasChatStarted = isChatStarted || Boolean(activeSessionId);
+  const hasChatStarted = Boolean(activeSessionId) || Boolean(visibleLocalMessage);
 
   return (
     <div className={styles.chatPage}>
@@ -190,6 +214,9 @@ export function ChatPage() {
             onScroll={handleMessagesScroll}
           >
             {isHistoryLoading && <p>Загружаем историю...</p>}
+            {isHistoryError && (
+              <p role="alert">Не удалось загрузить историю диалога.</p>
+            )}
 
             {chat?.messages.map((message) => (
               <div
@@ -242,7 +269,10 @@ export function ChatPage() {
       )}
 
       <div className={`${styles.inputContainer} ${hasChatStarted ? styles.bottom : ''}`}>
-        <SendMessage onSend={handleSend} disabled={isLoading} />
+        <SendMessage
+          onSend={handleSend}
+          disabled={isLoading || Boolean(activeSessionId && isHistoryLoading)}
+        />
       </div>
     </div>
   );

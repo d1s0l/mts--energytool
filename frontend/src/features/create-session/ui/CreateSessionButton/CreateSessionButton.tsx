@@ -1,9 +1,10 @@
 import styles from './CreateSessionButton.module.scss'
 import { Plus } from 'lucide-react';
 import { useCreateChatMutation } from '@/entities/session/api/sessionApi';
+import type { CreateSessionResponse } from '@/entities/session/model/session.types';
 
 interface CreateSessionButtonProps {
-  onCreated: (sessionId: string) => void;
+  onCreated: (session: CreateSessionResponse) => void;
 }
 
 export function CreateSessionButton({
@@ -14,7 +15,7 @@ export function CreateSessionButton({
   const handleCreate = async () => {
     try {
       const session = await createChat().unwrap();
-      onCreated(session.id);
+      onCreated(session);
     } catch (error) {
       console.error('Не удалось создать диалог:', error);
     }

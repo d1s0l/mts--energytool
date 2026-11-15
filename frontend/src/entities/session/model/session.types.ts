@@ -34,4 +34,10 @@ export interface SessionHistoryResponse extends Session {
 }
 
 // Ответ POST /api/sessions
-export type CreateSessionResponse = Session;
+export interface CreateSessionResponse {
+  id: string;
+  access_token: string;
+  state: SessionState;
+  created_at: string;
+  deleted_at: string | null;
+}

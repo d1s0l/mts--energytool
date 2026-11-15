@@ -1,39 +1,30 @@
 import { Trash } from 'lucide-react';
-import { useGetChatsQuery, useDeleteChatMutation } from '../../api/sessionApi';
+import { useState } from 'react';
+import { useDeleteChatMutation } from '../../api/sessionApi';
+import type { StoredSession } from '../../model/sessionStorage';
 import styles from './SessionList.module.scss';
 
 interface SessionListProps {
+  sessions: StoredSession[];
   activeSessionId: string | null;
   onSelect: (sessionId: string) => void;
   onDeleted?: (sessionId: string) => void;
 }
 
-export function SessionList({ activeSessionId, onSelect, onDeleted }: SessionListProps) {
-  const { data, isLoading, isError } = useGetChatsQuery({
-    limit: 20,
-    offset: 0,
-  });
-
+export function SessionList({ sessions, activeSessionId, onSelect, onDeleted }: SessionListProps) {
   const [deleteChat, { isLoading: isDeleting }] = useDeleteChatMutation();
-
-  const sessions = data?.items ?? [];
+  const [deleteError, setDeleteError] = useState(false);
 
   const handleDelete = async (sessionId: string) => {
     try {
       await deleteChat(sessionId).unwrap();
+      setDeleteError(false);
       onDeleted?.(sessionId);
     } catch (error) {
       console.error('Ошибка удаления чата:', error);
+      setDeleteError(true);
     }
   };
-
-  if (isLoading) {
-    return <p>Загрузка диалогов...</p>;
-  }
-
-  if (isError) {
-    return <p>Не удалось загрузить диалоги</p>;
-  }
 
   if (sessions.length === 0) {
     return <p>Здесь появятся ваши диалоги</p>;
@@ -41,13 +32,15 @@ export function SessionList({ activeSessionId, onSelect, onDeleted }: SessionLis
 
   return (
     <div className={styles.list}>
+      {deleteError && <p role="alert">Не удалось удалить диалог. Попробуйте ещё раз.</p>}
+
       {sessions.map((session) => (
         <div
           key={session.id}
           className={`${styles.itemWrapper} ${activeSessionId === session.id ? styles.active : ''}`}
         >
           <button type="button" className={styles.item} onClick={() => onSelect(session.id)}>
-            <span>{session.first_message?.trim() || 'Новый диалог'}</span>
+            <span>{session.title || 'Новый диалог'}</span>
           </button>
 
           <button

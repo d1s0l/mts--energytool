@@ -10,4 +10,9 @@
   border-radius: v.$border-radius-btn;
   color: var(--mts-ink);
   text-decoration: none;
+
+  &.active {
+    border-color: #ff0032;
+    color: #ff0032;
+  }
 }
