@@ -37,6 +37,25 @@ class MessageOut(BaseModel):
     debug: dict[str, Any] | None
     status: Literal["processing", "completed", "failed"] = "completed"
 
+    @field_validator("debug", mode="before")
+    @classmethod
+    def hide_raw_llm_response(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        public_debug = {
+            key: item
+            for key, item in value.items()
+            if key
+            not in {
+                "raw_response",
+                "raw_response_attempts",
+                "parsed_response",
+                "validation_errors",
+                "final_response",
+            }
+        }
+        return public_debug or None
+
 
 class SessionDetailOut(SessionOut):
     messages: list[MessageOut]
@@ -44,6 +63,7 @@ class SessionDetailOut(SessionOut):
 
 class MessageDebugOut(BaseModel):
     message_id: UUID
+    role: Literal["user", "assistant"]
     created_at: datetime
     debug: dict[str, Any] | None
 

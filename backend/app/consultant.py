@@ -1,6 +1,6 @@
 """Интерфейс между API сообщений и модулем консультанта."""
 
-from typing import Annotated, Literal, Protocol, TypedDict
+from typing import Annotated, Any, Literal, Protocol, TypedDict
 
 from pydantic import BaseModel, Field, FiniteFloat, StringConstraints
 
@@ -28,12 +28,20 @@ class ConsultantReply(BaseModel):
     search_ms: Annotated[FiniteFloat, Field(ge=0)] | None = None
     generation_ms: Annotated[FiniteFloat, Field(ge=0)] | None = None
     sources: list[DebugSource] = Field(default_factory=list)
+    raw_response: str | None = None
+    raw_response_attempts: list[str] = Field(default_factory=list)
+    parsed_response: Any = None
+    validation_errors: list[str] = Field(default_factory=list)
     lead: dict[str, str] | None = None
     lead_summary: str | None = None
 
 
 class ConsultantUnavailable(Exception):
     """Модель или поиск временно недоступны."""
+
+    def __init__(self, message: str = "", *, debug: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.debug = debug
 
 
 class Consultant(Protocol):

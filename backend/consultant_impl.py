@@ -70,12 +70,18 @@ POLICY = """Ты консультант МТС EnergyTool. Отвечай по-�
 все три поля известны и нет текущего отказа. Не обещай время звонка или фактическую отправку.
 До подтверждения приложения говори лишь, что данные готовы для заявки.
 
-Верни только JSON: {"answer":"текст", "state":"chatting или awaiting_contacts",
+Верни только JSON: {"state":"chatting или awaiting_contacts",
 "evidence_ids":["ID реально использованного фрагмента"],
 "lead":null или {"full_name":"...","phone":"...","company":"..."}}.
+Для kind=product не включай поле answer: backend соберёт ответ из answer_support.
+Для остальных kind обязательно включи answer с текстом ответа.
 Для kind=product добавь answer_support: список объектов
 {"text":"предложение ответа", "evidence_id":"ID", "quote":"дословная цитата evidence"}.
-Все text по порядку должны составлять answer без пропусков; уточнение сюда не включай.
+Тексты answer_support — единственный источник итогового продуктового ответа: backend
+соединит их пробелом в указанном порядке. Включай в список каждое утверждение и условие,
+которое должно попасть в ответ; не добавляй отдельные вступления, связки или пояснения
+в другие поля. Уточнение сюда не включай: оно возвращается отдельно в follow_up_question.
+Упорядочи сегменты как связный ответ, поскольку backend сохранит именно этот порядок.
 Каждый text должен непосредственно следовать из своей quote, включая все условия.
 Цитата должна подтверждать именно утверждение, а не просто относиться к той же теме.
 Не пиши неподтверждённое предложение: удали его, не подбирай к нему похожую цитату.
@@ -86,7 +92,7 @@ follow_up_question — один короткий вопрос со знаком 
 Для kind=clarify и при state=awaiting_contacts вопрос обязателен,
 кроме готовой заявки или прямой просьбы пользователя не задавать вопросы.
 Для продуктового ответа обязательно укажи evidence_ids. Для приветствия или сбора контактов
-они могут быть пустыми. Не включай скрытые рассуждения и служебные данные в answer.
+они могут быть пустыми. Не включай скрытые рассуждения и служебные данные в текст ответа.
 """
 
 
@@ -231,9 +237,9 @@ def numbers(text):
 
 
 def validate_answer_support(data, evidence, ids, messages):
-    """Check coverage and verbatim evidence; entailment still needs model evaluation."""
+    """Validate product answer segments and compose the answer from them."""
     if data.get("kind") != "product":
-        return
+        return None
     support = data.get("answer_support")
     if not isinstance(support, list) or not 1 <= len(support) <= 12:
         raise ValueError("Product answer requires answer_support for every sentence")
@@ -248,7 +254,7 @@ def validate_answer_support(data, evidence, ids, messages):
             raise ValueError("Invalid answer_support item")
         text, source, quote = item.get("text"), item.get("evidence_id"), item.get("quote")
         if (
-            not isinstance(text, str) or not text.strip()
+            not isinstance(text, str) or not text.strip() or "\x00" in text
             or not isinstance(source, str) or source not in ids
             or not isinstance(quote, str) or not quote.strip() or len(quote) > 4000
         ):
@@ -259,8 +265,7 @@ def validate_answer_support(data, evidence, ids, messages):
         if not numbers(text).issubset(numbers(quote) | user_numbers):
             raise ValueError("answer_support number is absent from its evidence quote")
         parts.append(text)
-    if " ".join(" ".join(parts).split()) != " ".join(data["answer"].split()):
-        raise ValueError("answer_support must cover the entire answer in order")
+    return " ".join(" ".join(parts).split())
 
 
 def append_follow_up(data, messages):
@@ -438,27 +443,37 @@ class EnergyConsultant:
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ]
         started = time.perf_counter()
+        raw_response = None
+        raw_response_attempts = []
+        parsed_response = None
+        validation_errors = []
         for attempt in range(2):
-            raw = await self.client.complete(prompt)
+            try:
+                raw = await self.client.complete(prompt)
+            except ConsultantUnavailable as exc:
+                if raw_response is not None:
+                    raise ConsultantUnavailable(
+                        str(exc),
+                        debug={
+                            "raw_response": raw_response,
+                            "raw_response_attempts": raw_response_attempts,
+                            "parsed_response": parsed_response,
+                            "validation_errors": validation_errors,
+                            "final_response": None,
+                        },
+                    ) from exc
+                raise
+            raw_response = raw
+            raw_response_attempts.append(raw)
+            parsed_response = None
             try:
                 clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
                 data = json.loads(clean)
+                parsed_response = data
                 if not isinstance(data, dict):
                     raise ValueError("Expected object")
-                answer = data["answer"]
-                if (
-                    not isinstance(answer, str)
-                    or not answer.strip()
-                    or len(answer) > 10000
-                    or "\x00" in answer
-                ):
-                    raise ValueError("Invalid answer")
-                ids = data.get("evidence_ids", [])
-                if not isinstance(ids, list) or any(
-                    not isinstance(i, str) or i not in evidence for i in ids
-                ):
-                    raise ValueError("Unknown evidence")
-                if data.get("kind") not in {
+                kind = data.get("kind")
+                if kind not in {
                     "product",
                     "clarify",
                     "contacts",
@@ -466,8 +481,28 @@ class EnergyConsultant:
                     "unavailable",
                 }:
                     raise ValueError("Invalid answer kind")
-                answer = append_follow_up(data, messages)
-                validate_device_compatibility(text, answer, data["kind"])
+                ids = data.get("evidence_ids", [])
+                if not isinstance(ids, list) or any(
+                    not isinstance(i, str) or i not in evidence for i in ids
+                ):
+                    raise ValueError("Unknown evidence")
+                if kind == "product":
+                    if not ids:
+                        raise ValueError("Product answer requires evidence")
+                    answer = validate_answer_support(data, evidence, ids, messages)
+                    response_data = {**data, "answer": answer}
+                else:
+                    answer = data["answer"]
+                    response_data = data
+                if (
+                    not isinstance(answer, str)
+                    or not answer.strip()
+                    or len(answer) > 10000
+                    or "\x00" in answer
+                ):
+                    raise ValueError("Invalid answer")
+                answer = append_follow_up(response_data, messages)
+                validate_device_compatibility(text, answer, kind)
                 if re.search(
                     r"в наших рекомендациях|согласно нашей документации|"
                     r"(?:прямо |явно )?указано в (?:наших |предоставленных )?"
@@ -482,9 +517,6 @@ class EnergyConsultant:
                     )
                 if len(answer) > 10000:
                     raise ValueError("Answer exceeds limit with follow-up")
-                if data["kind"] == "product" and not ids:
-                    raise ValueError("Product answer requires evidence")
-                validate_answer_support(data, evidence, ids, messages)
                 # An uncited answer cannot introduce product figures.
                 supported = "\n".join(evidence[i]["text"] for i in ids)
                 supported += "\n" + "\n".join(m["content"] for m in messages if m["role"] == "user")
@@ -504,6 +536,10 @@ class EnergyConsultant:
                     lead_summary=summary,
                     search_ms=result.get("search_ms"),
                     generation_ms=(time.perf_counter() - started) * 1000,
+                    raw_response=raw_response,
+                    raw_response_attempts=raw_response_attempts,
+                    parsed_response=parsed_response,
+                    validation_errors=validation_errors,
                     sources=[
                         {
                             "document_id": evidence[i]["source"],
@@ -517,6 +553,7 @@ class EnergyConsultant:
                 )
             except (ValueError, KeyError, TypeError) as exc:
                 reason = str(exc) if type(exc) is ValueError else type(exc).__name__
+                validation_errors.append(f"Attempt {attempt + 1}: {reason}")
                 log.warning("Consultant output rejected (%s)", reason)
                 if attempt == 0:
                     prompt.append({"role": "assistant", "content": raw[:12000]})
@@ -527,15 +564,26 @@ class EnergyConsultant:
                                 "Нарушен контракт: "
                                 + str(exc)[:300]
                                 + ". Проверь JSON, источники, дословные контакты и "
-                                "follow_up_question. Для product верни answer_support: "
-                                "все предложения answer по порядку с дословными цитатами "
-                                "из evidence. Удали выводы, которых нет в цитатах, сохрани "
-                                "существенные условия. Исправь ответ без новых фактов. "
+                                "follow_up_question. Для product не возвращай answer: "
+                                "верни все части ответа только в answer_support.text "
+                                "в нужном порядке, каждая с дословной цитатой из evidence. "
+                                "Backend составит из этих частей итоговый ответ. Удали "
+                                "выводы, которых нет в цитатах, сохрани существенные условия. "
+                                "Исправь ответ без новых фактов. "
                                 "Не спрашивай уже известные параметры."
                             ),
                         }
                     )
-        raise ConsultantUnavailable("Model output failed validation")
+        raise ConsultantUnavailable(
+            "Model output failed validation",
+            debug={
+                "raw_response": raw_response,
+                "raw_response_attempts": raw_response_attempts,
+                "parsed_response": parsed_response,
+                "validation_errors": validation_errors,
+                "final_response": None,
+            },
+        )
 
 
 def create_consultant():

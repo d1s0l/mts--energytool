@@ -12,6 +12,7 @@ from unittest.mock import patch
 from rag.rag_search import Config, KnowledgeSearch
 
 from app.consultant import ConsultantReply, ConsultantUnavailable
+from app.schemas import MessageOut
 from build_submission import build_submission
 from consultant_impl import (
     EnergyConsultant,
@@ -38,6 +39,14 @@ HIT = {
 class Search:
     async def search(self, text, history=None):
         return {"hits": [HIT], "guardrails": [], "search_ms": 1}
+
+
+class SearchWithHits:
+    def __init__(self, hits):
+        self.hits = hits
+
+    async def search(self, text, history=None):
+        return {"hits": self.hits, "guardrails": [], "search_ms": 1}
 
 
 class Client:
@@ -67,6 +76,27 @@ def output(**changes):
 
 
 class ConsultantTests(unittest.TestCase):
+    def test_normal_message_schema_hides_raw_debug_fields(self):
+        message = MessageOut.model_validate(
+            {
+                "id": "11111111-1111-4111-8111-111111111111",
+                "role": "assistant",
+                "text": "Ответ",
+                "created_at": "2026-11-15T09:27:05Z",
+                "debug": {
+                    "total_ms": 2000,
+                    "sources": [],
+                    "raw_response": "raw",
+                    "raw_response_attempts": ["raw"],
+                    "parsed_response": {"answer": "raw"},
+                    "validation_errors": [],
+                    "final_response": "Ответ",
+                },
+            }
+        )
+
+        self.assertEqual(message.debug, {"total_ms": 2000, "sources": []})
+
     def test_internal_recommendation_language_is_rewritten(self):
         client = Client([output(answer="Это прямо указано в наших рекомендациях."), output()])
         reply = asyncio.run(EnergyConsultant(client)(text="Цена?", history=[], search=Search()))
@@ -94,21 +124,204 @@ class ConsultantTests(unittest.TestCase):
         self.assertNotIn("?", reply.text)
 
     def test_missing_or_fabricated_evidence_support_is_repaired(self):
-        for support in (None, [], [{"text": "Да.", "evidence_id": "fact",
-                                    "quote": "Неподтверждённая цитата"}]):
+        for support in (
+            None,
+            [],
+            [{"text": "Да.", "evidence_id": "fact", "quote": "Неподтверждённая цитата"}],
+            [{"text": "Да.", "evidence_id": "invented", "quote": HIT["text"]}],
+        ):
             with self.subTest(support=support):
                 client = Client([output(answer_support=support), output()])
                 asyncio.run(EnergyConsultant(client)(text="Цена?", history=[], search=Search()))
                 self.assertEqual(client.calls, 2)
 
-    def test_uncited_additional_sentence_is_repaired(self):
+    def test_uncited_answer_text_outside_support_is_omitted(self):
         original = output()
         bad = json.loads(original)
         bad["answer"] += " Монтаж на фасаде дороже."
-        client = Client([json.dumps(bad, ensure_ascii=False), original])
+        bad["follow_up_question"] = None
+        client = Client([json.dumps(bad, ensure_ascii=False)])
         reply = asyncio.run(EnergyConsultant(client)(text="Цена?", history=[], search=Search()))
-        self.assertEqual(client.calls, 2)
+        self.assertEqual(client.calls, 1)
         self.assertNotIn("фасаде", reply.text)
+        self.assertEqual(reply.text, bad["answer_support"][0]["text"])
+
+    def test_product_answer_is_composed_from_ordered_support_segments(self):
+        segments = [
+            {
+                "text": "Ориентир — 25 000 рублей в год.",
+                "evidence_id": "fact",
+                "quote": "Ориентир: 25 000 рублей в год.",
+            },
+            {
+                "text": "Итог зависит от проекта.",
+                "evidence_id": "fact",
+                "quote": "Итог зависит от проекта.",
+            },
+        ]
+        data = json.loads(
+            output(
+                answer="Неподтверждённое вступление. Итог зависит от проекта.",
+                answer_support=segments,
+                follow_up_question=None,
+            )
+        )
+        data.pop("answer")
+        reply = asyncio.run(
+            EnergyConsultant(Client([json.dumps(data, ensure_ascii=False)]))(
+                text="Сколько стоит?", history=[], search=Search()
+            )
+        )
+
+        self.assertEqual(
+            reply.text,
+            "Ориентир — 25 000 рублей в год. Итог зависит от проекта.",
+        )
+
+    def test_product_answer_keeps_support_order_not_model_answer_order(self):
+        segments = [
+            {
+                "text": "Итог зависит от проекта.",
+                "evidence_id": "fact",
+                "quote": "Итог зависит от проекта.",
+            },
+            {
+                "text": "Ориентир — 25 000 рублей в год.",
+                "evidence_id": "fact",
+                "quote": "Ориентир: 25 000 рублей в год.",
+            },
+        ]
+        reply = asyncio.run(
+            EnergyConsultant(
+                Client(
+                    [
+                        output(
+                            answer="Ориентир — 25 000 рублей в год. Итог зависит от проекта.",
+                            answer_support=segments,
+                            follow_up_question=None,
+                        )
+                    ]
+                )
+            )(text="Сколько стоит?", history=[], search=Search())
+        )
+
+        self.assertEqual(
+            reply.text,
+            "Итог зависит от проекта. Ориентир — 25 000 рублей в год.",
+        )
+
+    def test_short_context_answer_uses_only_supported_segments(self):
+        roof_hit = {
+            "chunk_id": "roof",
+            "source": "kb.md",
+            "title": "Монтаж",
+            "section": "Крыша",
+            "text": "Перед монтажом требуется оценить состояние покрытия.",
+            "score": 0.02,
+        }
+        data = {
+            "state": "chatting",
+            "kind": "product",
+            "evidence_ids": ["roof"],
+            "answer": "Понял, крыше 2 года. Перед монтажом требуется оценить состояние покрытия.",
+            "answer_support": [
+                {
+                    "text": "Перед монтажом требуется оценить состояние покрытия.",
+                    "evidence_id": "roof",
+                    "quote": roof_hit["text"],
+                }
+            ],
+            "follow_up_question": None,
+        }
+        reply = asyncio.run(
+            EnergyConsultant(
+                Client([json.dumps(data, ensure_ascii=False)])
+            )(
+                text="2 года",
+                history=[{"role": "assistant", "content": "Сколько лет крыше?"}],
+                search=SearchWithHits([roof_hit]),
+            )
+        )
+
+        self.assertEqual(reply.text, "Перед монтажом требуется оценить состояние покрытия.")
+
+    def test_product_follow_up_is_appended_after_composed_answer(self):
+        reply = asyncio.run(
+            EnergyConsultant(
+                Client(
+                    [
+                        output(
+                            answer="Неиспользуемый текст.",
+                            answer_support=[
+                                {
+                                    "text": "Итог зависит от проекта.",
+                                    "evidence_id": "fact",
+                                    "quote": "Итог зависит от проекта.",
+                                }
+                            ],
+                            follow_up_question="Какой объём потребления?",
+                        )
+                    ]
+                )
+            )(text="Сколько стоит?", history=[], search=Search())
+        )
+
+        self.assertEqual(
+            reply.text,
+            "Итог зависит от проекта.\n\nКакой объём потребления?",
+        )
+
+    def test_product_answer_can_use_multiple_sources(self):
+        hits = [
+            {
+                "chunk_id": "metering",
+                "source": "metering.md",
+                "title": "Учёт",
+                "section": "",
+                "text": "Система собирает данные со счётчиков.",
+                "score": 0.01,
+            },
+            {
+                "chunk_id": "reports",
+                "source": "reports.md",
+                "title": "Отчёты",
+                "section": "",
+                "text": "Отчётность доступна в личном кабинете.",
+                "score": 0.02,
+            },
+        ]
+        data = {
+            "state": "chatting",
+            "kind": "product",
+            "evidence_ids": ["metering", "reports"],
+            "answer_support": [
+                {
+                    "text": "Система собирает данные со счётчиков.",
+                    "evidence_id": "metering",
+                    "quote": hits[0]["text"],
+                },
+                {
+                    "text": "Отчётность доступна в личном кабинете.",
+                    "evidence_id": "reports",
+                    "quote": hits[1]["text"],
+                },
+            ],
+            "follow_up_question": None,
+        }
+        reply = asyncio.run(
+            EnergyConsultant(Client([json.dumps(data, ensure_ascii=False)]))(
+                text="Какие возможности есть?", history=[], search=SearchWithHits(hits)
+            )
+        )
+
+        self.assertEqual(
+            reply.text,
+            "Система собирает данные со счётчиков. Отчётность доступна в личном кабинете.",
+        )
+        self.assertEqual(
+            [source.fragment_id for source in reply.sources],
+            ["metering", "reports"],
+        )
 
     def test_number_from_another_claim_cannot_support_current_claim(self):
         client = Client([
@@ -175,19 +388,50 @@ class ConsultantTests(unittest.TestCase):
         self.assertNotIn("?", reply.text)
 
     def test_real_sources_and_one_generation(self):
-        client = Client([output()])
+        raw = output()
+        client = Client([raw])
         reply = asyncio.run(
             EnergyConsultant(client)(text="Сколько стоит?", history=[], search=Search())
         )
         self.assertEqual(client.calls, 1)
         self.assertEqual(reply.sources[0].fragment_id, "fact")
         self.assertIn("зависит от проекта", reply.text)
+        self.assertEqual(reply.raw_response, raw)
+        self.assertEqual(reply.parsed_response, json.loads(raw))
+        self.assertEqual(reply.validation_errors, [])
 
     def test_invented_number_repaired_once(self):
-        client = Client([output(answer="Стоимость 999 рублей"), output()])
+        rejected = output(answer="Стоимость 999 рублей")
+        accepted = output()
+        client = Client([rejected, accepted])
         reply = asyncio.run(EnergyConsultant(client)(text="Цена?", history=[], search=Search()))
         self.assertEqual(client.calls, 2)
         self.assertNotIn("999", reply.text)
+        self.assertEqual(reply.raw_response, accepted)
+        self.assertEqual(reply.raw_response_attempts, [rejected, accepted])
+        self.assertEqual(reply.parsed_response, json.loads(accepted))
+        self.assertEqual(len(reply.validation_errors), 1)
+        self.assertIn(
+            "answer_support number is absent from its evidence quote",
+            reply.validation_errors[0],
+        )
+
+    def test_invalid_json_keeps_raw_response_and_parse_error(self):
+        client = Client(["not JSON", "still not JSON"])
+        with self.assertRaises(ConsultantUnavailable) as raised:
+            asyncio.run(
+                EnergyConsultant(client)(text="Цена?", history=[], search=Search())
+            )
+
+        self.assertEqual(client.calls, 2)
+        self.assertEqual(raised.exception.debug["raw_response"], "still not JSON")
+        self.assertEqual(
+            raised.exception.debug["raw_response_attempts"],
+            ["not JSON", "still not JSON"],
+        )
+        self.assertIsNone(raised.exception.debug["parsed_response"])
+        self.assertEqual(len(raised.exception.debug["validation_errors"]), 2)
+        self.assertIn("JSONDecodeError", raised.exception.debug["validation_errors"][-1])
 
     def test_unknown_sources_and_missing_citations_fail_closed(self):
         for bad in [output(evidence_ids=["invented"]), output(evidence_ids=[]), "broken JSON"]:

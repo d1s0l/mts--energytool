@@ -83,10 +83,6 @@ export function DebugPage() {
       ),
     );
   const getMessageDebug = (message: Message) => {
-    if (localAssistantMessage?.id === message.id && localAssistantMessage.debug !== null) {
-      return localAssistantMessage.debug;
-    }
-
     if (debugByMessageId.has(message.id)) {
       return debugByMessageId.get(message.id) ?? null;
     }
@@ -185,7 +181,7 @@ export function DebugPage() {
             className={message.role === 'user' ? styles.userMessage : styles.assistantMessage}
           >
             <p className={styles.messageText}>{message.text}</p>
-            {message.role === 'assistant' && (
+            {(message.role === 'assistant' || debugByMessageId.has(message.id)) && (
               <DebugPanel metadata={getMessageDebug(message)} />
             )}
           </article>
