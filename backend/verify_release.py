@@ -1,6 +1,7 @@
 """One release gate: offline regressions, PostgreSQL/API, live persisted lead, actual flat ZIP."""
 
 import argparse
+import fcntl
 import hashlib
 import importlib.metadata
 import json
@@ -22,6 +23,16 @@ def main():
     p.add_argument("--offline", action="store_true")
     p.add_argument("--submission-python", type=Path)
     args = p.parse_args()
+    args.output_root.mkdir(parents=True, exist_ok=True)
+    gate_lock = (args.output_root / ".release-check.lock").open("a+")
+    try:
+        fcntl.flock(gate_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print(
+            "Another release verification is already running; no model requests started.",
+            file=sys.stderr,
+        )
+        return 2
     from dotenv import dotenv_values
 
     root = Path(__file__).resolve().parents[1]
@@ -47,9 +58,9 @@ def main():
         "TEMPERATURE",
         "RAG_MODE",
         "LLM_TIMEOUT",
-        'LLM_REASONING_EFFORT',
-        'LLM_MIN_INTERVAL',
-        'SUBMISSION_MIN_INTERVAL',
+        "LLM_REASONING_EFFORT",
+        "LLM_MIN_INTERVAL",
+        "SUBMISSION_MIN_INTERVAL",
         "EMB_MODEL",
         "RERANKER_MODEL",
     ):

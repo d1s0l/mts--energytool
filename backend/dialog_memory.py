@@ -53,7 +53,13 @@ def select_active_object(memory, messages):
     """A unique explicit reference selects an existing object before generation."""
     scopes = {f['scope'] for f in memory['facts']} - {'client', 'default'}
     current = messages[-1]
-    reference = object_reference(current['content'], scopes)
+    declaration=re.match(r'\s*((?:первый|второй|третий|четв[её]ртый|пятый|шестой|\d+[- ]?й)\s+'
+                         r'(?:склад|объект|цех|магазин|завод))\b[^:\n]{0,80}:',current['content'],re.I)
+    if declaration:
+        label=declaration.group(1)
+        reference=object_reference(label,scopes) or (label,label)
+    else:
+        reference = object_reference(current['content'], scopes)
     if not reference or reference[0] == active_scope(memory):
         return memory
     scope, quote = reference

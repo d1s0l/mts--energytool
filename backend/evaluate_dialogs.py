@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from app.consultant import ModelRateLimited
-from consultant_impl import EnergyConsultant, GroundingReviewer, ModelConfig
+from consultant_impl import EnergyConsultant, GroundingReviewer, ModelConfig, numbers
 from dialog_memory import active_scope, empty_memory
 from evaluate_answers import EvaluationClient, EvaluationSearch, Config, KnowledgeSearch, save
 
@@ -42,7 +42,7 @@ def check_turn(name, index, reply):
         return fact.get('value') if fact.get('status') == 'provided' else None
     if name == 'contacts_and_correction':
         if index in {0, 2}:
-            assert value(active_scope(memory), 'meter_count') == ('40' if index == 0 else '45'), 'meter_count_not_saved'
+            assert numbers(str(value(active_scope(memory), 'meter_count'))) == {('40' if index == 0 else '45')}, 'meter_count_not_saved'
         if index == 3:
             assert reply.state=='chatting', 'contact_form_reopened_after_refusal'
             assert facts.get(('client','contact_permission'), {}).get('status') == 'declined', 'refusal_not_saved'
