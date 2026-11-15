@@ -12,11 +12,23 @@ from collections import deque
 from pathlib import Path
 
 try:
-    from consultant import Consultant, ConsultantReply, ConsultantUnavailable, HistoryMessage, ModelRateLimited
+    from consultant import (
+        Consultant,
+        ConsultantReply,
+        ConsultantUnavailable,
+        HistoryMessage,
+        ModelRateLimited,
+    )
 except ModuleNotFoundError as exc:
     if exc.name != "consultant":
         raise
-    from app.consultant import Consultant, ConsultantReply, ConsultantUnavailable, HistoryMessage, ModelRateLimited
+    from app.consultant import (
+        Consultant,
+        ConsultantReply,
+        ConsultantUnavailable,
+        HistoryMessage,
+        ModelRateLimited,
+    )
 
 try:
     from rag_search import Config, KnowledgeSearch
@@ -91,10 +103,28 @@ async def answer_questions(
     answers = [fallback] * len(questions)
     search = SubmissionSearch(engine)
     rate_limit_retries = {}
+    adaptive_interval = float(os.getenv("SUBMISSION_MIN_INTERVAL", "0"))
+    if not 0 <= adaptive_interval <= 60:
+        raise ValueError("SUBMISSION_MIN_INTERVAL must be between 0 and 60")
+    next_turn_at = 0.0
+    dispatch_lock = asyncio.Lock()
+
+    async def reserve_turn():
+        nonlocal next_turn_at
+        async with dispatch_lock:
+            while next_turn_at > time.monotonic():
+                if deadline is not None and next_turn_at >= deadline:
+                    return False
+                await asyncio.sleep(next_turn_at - time.monotonic())
+            next_turn_at = time.monotonic() + adaptive_interval
+            return True
 
     async def worker():
+        nonlocal adaptive_interval, next_turn_at
         while pending:
             index, (_, question) = pending.popleft()
+            if not await reserve_turn():
+                return
             remaining = 60 if deadline is None else min(60, deadline - time.monotonic())
             if remaining <= 0:
                 return
@@ -123,14 +153,20 @@ async def answer_questions(
                 answers[index] = reply.text
             except ModelRateLimited as exc:
                 retries = rate_limit_retries.get(index, 0)
-                can_retry = retries < 2 and (deadline is None or deadline-time.monotonic() > exc.retry_after+55)
+                delay = max(60, exc.retry_after)
+                adaptive_interval = max(45, adaptive_interval)
+                next_turn_at = max(next_turn_at, time.monotonic() + delay)
+                can_retry = retries < 2 and (
+                    deadline is None or deadline - time.monotonic() > delay + 55
+                )
                 if can_retry:
-                    rate_limit_retries[index] = retries+1
-                    print(f'Question {index+1} rate limited; waiting before retry',file=sys.stderr)
-                    await asyncio.sleep(exc.retry_after)
+                    rate_limit_retries[index] = retries + 1
+                    print(
+                        f"Question {index + 1} rate limited; waiting before retry", file=sys.stderr
+                    )
                     pending.appendleft((index, questions[index]))
                 else:
-                    print(f'Question {index+1} failed (ModelRateLimited)',file=sys.stderr)
+                    print(f"Question {index + 1} failed (ModelRateLimited)", file=sys.stderr)
             except Exception as exc:
                 # Never emit provider exception text: it may contain secrets or contacts.
                 print(f"Question {index + 1} failed ({type(exc).__name__})", file=sys.stderr)

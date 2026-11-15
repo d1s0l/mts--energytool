@@ -79,7 +79,9 @@ async def verify(kb, db, output, interval=0, turn_interval=45):
                                     response = await client.post(path + "/messages", json=request)
                                     if response.status_code != 429 or attempt == 2:
                                         break
-                                    delay = float(response.headers.get("Retry-After", "60"))
+                                    delay = max(
+                                        60, float(response.headers.get("Retry-After", "60"))
+                                    )
                                     if delay > 120:
                                         break
                                     row["rate_limit_retries"] = attempt + 1

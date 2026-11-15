@@ -47,6 +47,9 @@ def main():
         "TEMPERATURE",
         "RAG_MODE",
         "LLM_TIMEOUT",
+        'LLM_REASONING_EFFORT',
+        'LLM_MIN_INTERVAL',
+        'SUBMISSION_MIN_INTERVAL',
         "EMB_MODEL",
         "RERANKER_MODEL",
     ):
@@ -243,6 +246,11 @@ def main():
             if api_report.get("status") == "rate_limited":
                 skip("packaged-model", "provider_rate_limited")
                 return 1
+            stage(
+                "provider-cooldown",
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                timeout=75,
+            )
         else:
             skip("live-api-lead", "model_or_test_database_unavailable")
         if provider_ready:

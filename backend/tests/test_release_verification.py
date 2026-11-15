@@ -28,6 +28,78 @@ from verify_submission import audit_archive, validate_csv
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_evening_only_input_does_not_justify_definite_efficiency_verdict(self):
+        from consultant_impl import validate_project_claims
+
+        plan = {"field": "daytime_consumption"}
+        with self.assertRaises(ValueError):
+            validate_project_claims(
+                "Сетевая станция при вечерней нагрузке имеет смысл, но её эффективность ниже.", plan
+            )
+        validate_project_claims(
+            "Смысл зависит от дневного потребления; пока нельзя подтвердить выгоду.", plan
+        )
+
+    def test_sentence_filter_does_not_bypass_unknown_daytime_load_guard(self):
+        class Client:
+            async def complete(self, messages):
+                return json.dumps(
+                    dict(
+                        answer="Смысл есть. Другие детали.",
+                        kind="product",
+                        state="chatting",
+                        evidence_ids=["fact"],
+                        lead=None,
+                        follow_up_question=None,
+                    )
+                )
+
+        class Search:
+            async def search(self, *args, **kwargs):
+                return {
+                    "hits": [
+                        dict(
+                            chunk_id="fact",
+                            source="solar.md",
+                            title="Станция",
+                            text="Сетевая станция.",
+                            score=1,
+                        )
+                    ]
+                }
+
+        class Reviewer:
+            async def check(self, *args, **kwargs):
+                return "Смысл есть."
+
+        with self.assertRaises(ConsultantUnavailable):
+            asyncio.run(
+                EnergyConsultant(Client(), reviewer=Reviewer())(
+                    text="У нас солнечная станция, нагрузка вечером. Имеет ли сетевая станция смысл?",
+                    history=[],
+                    search=Search(),
+                )
+            )
+
+    def test_numeric_grounding_accepts_inflected_words_and_equivalent_units_without_losing_scale(
+        self,
+    ):
+        from consultant_impl import numbers
+
+        cases = [
+            ("около сорока счётчиков", "40 счётчиков"),
+            ("на трёх складах", "3 склада"),
+            ("сорок пять тысяч", "45 000"),
+            ("один миллион двести тысяч", "1 200 000"),
+            ("0 тысяч", "0"),
+            ("2,0 МВт", "2 МВт"),
+        ]
+        for words, digits in cases:
+            with self.subTest(words=words):
+                self.assertEqual(numbers(words), numbers(digits))
+        self.assertNotIn("40", numbers("сорок тысяч"))
+        self.assertNotIn("3", numbers("один два"))
+
     def test_unclassified_pending_question_is_not_repeated_after_contact_refusal(self):
         question = "Какой формат отчёта удобен?"
 
@@ -168,7 +240,15 @@ class ReleaseTests(unittest.TestCase):
                 raise ModelRateLimited(2)
             return ConsultantReply(text="Готово.")
 
-        with patch("solution.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        clock = [10000.0]
+
+        async def advance(delay):
+            clock[0] += delay
+
+        with (
+            patch("solution.asyncio.sleep", new_callable=AsyncMock, side_effect=advance) as sleep,
+            patch("solution.time.monotonic", side_effect=lambda: clock[0]),
+        ):
             answers = asyncio.run(
                 answer_questions(
                     [("1", "Вопрос")], object(), consultant, 1, deadline=time.monotonic() + 120
@@ -176,7 +256,7 @@ class ReleaseTests(unittest.TestCase):
             )
         self.assertEqual(answers, ["Готово."])
         self.assertEqual(len(calls), 2)
-        sleep.assert_awaited_once_with(2)
+        sleep.assert_awaited_once_with(60)
 
     def test_batch_does_not_wait_past_global_deadline(self):
         from app.consultant import ModelRateLimited

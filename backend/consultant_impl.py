@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 from email.utils import parsedate_to_datetime
 from dataclasses import dataclass, field
+from decimal import Decimal
 
 try:
     from consultant import ConsultantReply, ConsultantUnavailable, ModelRateLimited
@@ -181,7 +182,7 @@ class ModelConfig:
             max_tokens=int(setting("MAX_TOKENS") or "1600"),
             timeout=float(setting("LLM_TIMEOUT") or "20"),
             max_workers=int(setting("MAX_WORKERS") or "3"),
-            reasoning_effort=setting("LLM_REASONING_EFFORT") or "low",
+            reasoning_effort=setting("LLM_REASONING_EFFORT") or "none",
             min_interval=float(setting("LLM_MIN_INTERVAL") or "0"),
         )
         if (
@@ -200,7 +201,7 @@ class ModelConfig:
             raise ValueError("Invalid temperature")
         if not 0 <= config.min_interval <= 60:
             raise ValueError('Invalid model request interval')
-        if config.reasoning_effort not in {"", "low", "medium", "high", "xhigh"}:
+        if config.reasoning_effort not in {"", "none", "low", "medium", "high", "xhigh"}:
             raise ValueError("Invalid reasoning effort")
         return config
 
@@ -321,12 +322,112 @@ def selected_summary(facts, messages):
     return "Задача и данные со слов клиента:\n" + "\n".join("• " + f for f in facts)
 
 
-def numbers(text):
-    return {
-        re.sub(r"\s", "", n).replace(",", ".")
-        for n in re.findall(r"\d+(?:[ \u00a0]\d{3})*(?:[.,]\d+)?", text)
-    }
+NUMBER_WORDS = {
+    word: value
+    for value, forms in (
+        (0, "ноль нуля"),
+        (1, "один одна одно одного одной одном одному одну одним"),
+        (2, "два две двух двум двумя"),
+        (3, "три трех трем тремя"),
+        (4, "четыре четырех четырем четырьмя"),
+        (5, "пять пяти пятью"),
+        (6, "шесть шести шестью"),
+        (7, "семь семи семью"),
+        (8, "восемь восьми восемью"),
+        (9, "девять девяти девятью"),
+        (10, "десять десяти десятью"),
+        (11, "одиннадцать одиннадцати"),
+        (12, "двенадцать двенадцати"),
+        (13, "тринадцать тринадцати"),
+        (14, "четырнадцать четырнадцати"),
+        (15, "пятнадцать пятнадцати"),
+        (16, "шестнадцать шестнадцати"),
+        (17, "семнадцать семнадцати"),
+        (18, "восемнадцать восемнадцати"),
+        (19, "девятнадцать девятнадцати"),
+        (20, "двадцать двадцати"),
+        (30, "тридцать тридцати"),
+        (40, "сорок сорока"),
+        (50, "пятьдесят пятидесяти"),
+        (60, "шестьдесят шестидесяти"),
+        (70, "семьдесят семидесяти"),
+        (80, "восемьдесят восьмидесяти"),
+        (90, "девяносто девяноста"),
+        (100, "сто ста"),
+        (200, "двести двухсот"),
+        (300, "триста трехсот"),
+        (400, "четыреста четырехсот"),
+        (500, "пятьсот пятисот"),
+        (600, "шестьсот шестисот"),
+        (700, "семьсот семисот"),
+        (800, "восемьсот восьмисот"),
+        (900, "девятьсот девятисот"),
+    )
+    for word in forms.split()
+}
+NUMBER_SCALES = {
+    word: value
+    for value, forms in (
+        (1000, "тысяча тысячи тысяч тысячу тысячей тыс"),
+        (1000000, "миллион миллиона миллионов млн"),
+        (1000000000, "миллиард миллиарда миллиардов млрд"),
+    )
+    for word in forms.split()
+}
 
+
+def numbers(text):
+    """Canonical quantities: сорока -> 40, сорок пять -> 45, 40 тыс -> 40000."""
+    text = text.lower().replace("ё", "е")
+    result = set()
+    total = Decimal(0)
+    part = Decimal(0)
+    active = False
+    last_class = 5
+    last_scale = float("inf")
+    end = 0
+
+    def flush():
+        nonlocal total, part, active, last_class, last_scale
+        if active:
+            result.add(format((total + part).normalize(), "f"))
+        total = Decimal(0)
+        part = Decimal(0)
+        active = False
+        last_class = 5
+        last_scale = float("inf")
+
+    for token in re.finditer(r"\d+(?:[ \u00a0]\d{3})*(?:[.,]\d+)?|[a-zа-я]+", text):
+        if text[end : token.start()].strip():
+            flush()
+        end = token.end()
+        word = token.group()
+        if word in NUMBER_SCALES:
+            scale = NUMBER_SCALES[word]
+            if scale >= last_scale or (active and last_class == 5):
+                flush()
+            total += (part if active else Decimal(1)) * scale
+            part = Decimal(0)
+            active = True
+            last_class = 5
+            last_scale = scale
+        elif word in NUMBER_WORDS or word[0].isdigit():
+            digit = word[0].isdigit()
+            value = (
+                Decimal(re.sub(r"\s", "", word).replace(",", "."))
+                if digit
+                else Decimal(NUMBER_WORDS[word])
+            )
+            rank = 4 if digit else (3 if value >= 100 else 2 if value >= 10 else 1)
+            if rank >= last_class:
+                flush()
+            part += value
+            active = True
+            last_class = rank
+        else:
+            flush()
+    flush()
+    return result
 
 def validate_answer_support(data, evidence, ids, messages):
     """Check coverage and verbatim evidence; entailment still needs model evaluation."""
@@ -419,6 +520,10 @@ def validate_project_claims(answer, plan):
                 and re.search(r"прибор|счетчик", sentence)):
             raise ValueError("Do not invent a mandatory meter wiring/layout per workshop; describe the capability and ask about existing meters")
         if plan and plan["field"] == "daytime_consumption":
+            if re.search(r'имеет (?:экономическ[а-я]* )?смысл|эффективност[^.!?]{0,25}(?:ниже|выше|меньше|больше)|выгодн',sentence):
+                conditional=re.search(r'может|возмож|зависит|нельзя|не гарант|(?:если|при условии)[^.!?]{0,100}(?:дневн|днем)',sentence)
+                if not conditional:
+                    raise ValueError('Daytime consumption is unknown: do not give a definite suitability or efficiency verdict')
             if re.search(r'экономик[^.!?]{0,25}слаб|эффект[^.!?]{0,25}меньш|перекрываем[^.!?]{0,25}меньш', sentence):
                 if not re.search(r'(?:если|при условии)[^.!?]{0,100}(?:дневн|днем)', sentence):
                     raise ValueError('Unknown daytime load: compare economics only conditionally on daytime consumption, not evening work alone')
@@ -740,8 +845,7 @@ class EnergyConsultant:
                 answer = append_follow_up(data, messages, allow_no_follow_up=allow_no_follow_up)
                 if not answer.strip():
                     raise ValueError('Answer must explain or acknowledge the latest user message')
-                validate_tariff_claims(answer, data.get('follow_up_question'), messages)
-                validate_project_claims(data["answer"], current_plan)
+                validate_tariff_claims('', data.get('follow_up_question'), messages)
                 validate_device_compatibility(text, answer, data["kind"])
                 if re.search(
                     r"в наших рекомендациях|согласно нашей документации|"
@@ -808,11 +912,11 @@ class EnergyConsultant:
                     if filtered is not None:
                         data['answer'] = filtered
                         answer = append_follow_up(data,messages,allow_no_follow_up=allow_no_follow_up)
-                        validate_tariff_claims(answer,data.get('follow_up_question'),messages)
-                        validate_project_claims(filtered,current_plan)
                         validate_device_compatibility(text,answer,data['kind'])
                         if not numbers(answer).issubset(numbers(supported)):
                             raise ValueError('Unsupported number after sentence filtering')
+                validate_tariff_claims(answer,data.get('follow_up_question'),messages)
+                validate_project_claims(answer,current_plan)
                 return ConsultantReply(
                     text=answer.strip(),
                     dialog_memory=remember_question(next_memory, (current_plan["field"] if current_plan else question_slot(data.get("follow_up_question"))) if "?" in answer else None, messages[-1]["message_id"]),

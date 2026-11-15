@@ -112,6 +112,7 @@ def main():
     p.add_argument("--approved-requirements", type=Path)
     p.add_argument("--audit-only", action="store_true")
     p.add_argument("--interval", type=float, default=0)
+    p.add_argument("--question-interval", type=float, default=45)
     p.add_argument(
         "--python",
         dest="runtime_python",
@@ -133,11 +134,17 @@ def main():
             env.update({k: v for k, v in dotenv_values(args.env).items() if v is not None})
         for name in ("PYTHONPATH", "TEST_DATABASE_URL", "DATABASE_URL", "API_ACCESS_TOKEN"):
             env.pop(name, None)
-        env.update(MAX_WORKERS="1", LLM_MIN_INTERVAL=str(args.interval), SUBMISSION_TIMEOUT="1100")
+        env.update(
+            MAX_WORKERS="1",
+            LLM_MIN_INTERVAL=str(args.interval),
+            SUBMISSION_TIMEOUT="1100",
+            SUBMISSION_MIN_INTERVAL=str(args.question_interval),
+        )
         report["execution_profile"] = {
             "MAX_WORKERS": 1,
             "LLM_MIN_INTERVAL": args.interval,
             "SUBMISSION_TIMEOUT": 1100,
+            "SUBMISSION_MIN_INTERVAL": args.question_interval,
         }
         version_probe = subprocess.run(
             [
