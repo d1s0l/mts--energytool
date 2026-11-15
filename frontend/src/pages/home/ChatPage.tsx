@@ -213,45 +213,49 @@ export function ChatPage() {
             className={styles.messages}
             onScroll={handleMessagesScroll}
           >
-            {isHistoryLoading && <p>Загружаем историю...</p>}
-            {isHistoryError && (
-              <p role="alert">Не удалось загрузить историю диалога.</p>
-            )}
+            <div className={styles.messagesContent}>
+              {isHistoryLoading && <p>Загружаем историю...</p>}
+              {isHistoryError && (
+                <p role="alert">Не удалось загрузить историю диалога.</p>
+              )}
 
-            {chat?.messages.map((message) => (
-              <div
-                key={message.id}
-                className={message.role === 'user' ? styles.userMessage : styles.assistantMessage}
-              >
-                {message.text}
-              </div>
-            ))}
+              {chat?.messages.map((message) => (
+                <div
+                  key={message.id}
+                  className={message.role === 'user' ? styles.userMessage : styles.assistantMessage}
+                >
+                  {message.text}
+                </div>
+              ))}
 
-            {visibleLocalMessage && !isLocalMessageInHistory && (
-              <>
-                <div className={styles.userMessage}>{visibleLocalMessage.text}</div>
+              {visibleLocalMessage && !isLocalMessageInHistory && (
+                <>
+                  <div className={styles.userMessage}>{visibleLocalMessage.text}</div>
 
-                {visibleLocalMessage.status === 'sending' && (
-                  <div className={styles.assistantMessage}>
-                    <ThinkingLoader />
-                  </div>
-                )}
+                  {visibleLocalMessage.status === 'sending' && (
+                    <div className={styles.assistantMessage}>
+                      <ThinkingLoader />
+                    </div>
+                  )}
 
-                {visibleLocalMessage.status === 'sent' && (
-                  <div className={styles.assistantMessage}>{visibleLocalMessage.assistantText}</div>
-                )}
+                  {visibleLocalMessage.status === 'sent' && (
+                    <div className={styles.assistantMessage}>
+                      {visibleLocalMessage.assistantText}
+                    </div>
+                  )}
 
-                {visibleLocalMessage.status === 'failed' && (
-                  <div className={styles.assistantMessage}>
-                    <p>Не удалось отправить сообщение. Попробуйте ещё раз.</p>
+                  {visibleLocalMessage.status === 'failed' && (
+                    <div className={styles.assistantMessage}>
+                      <p>Не удалось отправить сообщение. Попробуйте ещё раз.</p>
 
-                    <button type="button" onClick={handleRetry} className={styles.retryButton}>
-                      Повторить
-                    </button>
-                  </div>
-                )}
-              </>
-            )}
+                      <button type="button" onClick={handleRetry} className={styles.retryButton}>
+                        Повторить
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
           </div>
 
           {!isAtBottom && (
