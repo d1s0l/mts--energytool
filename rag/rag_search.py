@@ -27,7 +27,7 @@ LOGGER = logging.getLogger("rag_search")
 if not LOGGER.handlers:
     # The submission adapter does not configure logging; emit safe diagnostics to stderr.
     LOGGER.addHandler(logging.StreamHandler())
-    LOGGER.setLevel(logging.INFO)
+    LOGGER.setLevel(getattr(logging, os.getenv("RAG_LOG_LEVEL", "INFO").strip().upper(), logging.INFO))
     LOGGER.propagate = False
 
 
@@ -66,7 +66,7 @@ class Config:
     @classmethod
     def from_env(cls):
         return cls(
-            mode=_env("RAG_MODE", "auto"), top_k=int(_env("TOP_K", "6")),
+            mode=_env("RAG_MODE", "local"), top_k=int(_env("TOP_K", "4")),
             chunk_chars=int(_env("RAG_CHUNK_CHARS", "1800")),
             overlap_chars=int(_env("RAG_OVERLAP_CHARS", "240")),
             candidates=int(_env("RAG_CANDIDATES", "30")),
@@ -678,10 +678,6 @@ class KnowledgeSearch:
 
 
 def main():
-    logging.basicConfig(
-        level=getattr(logging, _env("RAG_LOG_LEVEL", "INFO").upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
     parser = argparse.ArgumentParser(description="Retrieve knowledge fragments; never generate answers")
     parser.add_argument("--kb", required=True)
     parser.add_argument("--question")
