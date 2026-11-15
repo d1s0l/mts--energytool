@@ -1,5 +1,6 @@
 import concurrent.futures
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,7 @@ class RetrievalTests(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, '-c', script, str(self.root)],
             cwd=Path(__file__).resolve().parents[1],
+            env={**os.environ, 'RAG_LOG_LEVEL': 'INFO'},
             capture_output=True, text=True, check=True,
         )
         self.assertEqual(result.stdout, '')
@@ -46,6 +48,12 @@ class RetrievalTests(unittest.TestCase):
         self.assertIn('rag_search_complete', result.stderr)
         self.assertIn('hits=', result.stderr)
         self.assertNotIn('Панели ставят', result.stderr)
+
+    def test_submission_defaults_use_fast_local_search_and_four_hits(self):
+        with patch.dict(os.environ, {'RAG_MODE': '', 'TOP_K': ''}):
+            config = Config.from_env()
+        self.assertEqual(config.mode, 'local')
+        self.assertEqual(config.top_k, 4)
 
     def test_source_lines_are_exact(self):
         for c in self.engine.chunks:
