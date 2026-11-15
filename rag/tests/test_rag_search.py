@@ -1,5 +1,7 @@
 import concurrent.futures
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 import urllib.error
@@ -25,6 +27,25 @@ class RetrievalTests(unittest.TestCase):
         hit = self.engine.search('Панели на восточный скат')['hits'][0]
         self.assertEqual(hit['source'], 'solar.md')
         self.assertIn('западный', hit['text'])
+
+    def test_standalone_run_emits_index_and_search_metrics_to_stderr(self):
+        script = (
+            "from rag_search import Config, KnowledgeSearch\n"
+            "engine = KnowledgeSearch(__import__('sys').argv[1], Config())\n"
+            "engine.search('панели')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, '-c', script, str(self.root)],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(result.stdout, '')
+        self.assertIn('rag_index_ready documents=2', result.stderr)
+        self.assertIn('chunks=', result.stderr)
+        self.assertIn('total_ms=', result.stderr)
+        self.assertIn('rag_search_complete', result.stderr)
+        self.assertIn('hits=', result.stderr)
+        self.assertNotIn('Панели ставят', result.stderr)
 
     def test_source_lines_are_exact(self):
         for c in self.engine.chunks:
