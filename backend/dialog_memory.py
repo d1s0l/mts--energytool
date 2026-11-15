@@ -63,12 +63,12 @@ def select_active_object(memory, messages):
 def contact_permission(text):
     """Recognize explicit contact consent/refusal; other topics give no decision."""
     refused = re.search(
-        r'не (?:хочу|готов|буду|дам|согласен|разрешаю).{0,50}(?:телефон|контакт|заявк|звон)|'
-        r'(?:телефон|контакт|заявк).{0,35}не (?:хочу|готов|буду|дам)|не звоните|без звонк', text, re.I)
+        r'не (?:хочу|готов|буду|дам|согласен|разрешаю|оформляйте|оставляйте).{0,50}(?:телефон|контакт|заявк|звон)|'
+        r'(?:телефон|контакт|заявк).{0,35}не (?:хочу|готов|буду|дам|оформляйте|оставляйте)|не звоните|без звонк', text, re.I)
     if refused:
         return 'declined', refused.group()
     allowed = re.search(
-        r'(?:хочу|готов|давайте|оформите|оставлю|согласен).{0,40}(?:заявк|контакт|телефон)|свяжитесь|позвоните', text, re.I)
+        r'(?:хочу|готов|давайте|оформите|оставлю|согласен|передайте).{0,40}(?:заявк|контакт|телефон|звон)|свяжитесь|позвоните|\bзвоните\b|перезвоните|можете позвонить', text, re.I)
     return ('provided', allowed.group()) if allowed else None
 
 
@@ -150,7 +150,7 @@ def merge_memory(previous, updates, messages):
                     raise ValueError('Memory value must be a literal part of its quote')
         elif status == 'unknown' and not re.search(r'не знаю|не помню|неизвест|нет данных|не могу сказать|не уверен', quote, re.I):
             raise ValueError('Unknown status requires a statement of uncertainty')
-        elif status == 'declined' and not re.search(r'не (?:хочу|буду|готов|дам|сообщ)|не звоните|отказ|без звонк', quote, re.I):
+        elif status == 'declined' and not re.search(r'не (?:хочу|буду|готов|дам|сообщ|оформляйте|оставляйте)|не звоните|отказ|без звонк', quote, re.I):
             raise ValueError('Declined status requires a refusal')
         if status in {'unknown', 'declined'} and value is not None:
             raise ValueError('Unknown/declined values must be null')

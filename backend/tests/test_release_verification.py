@@ -22,6 +22,45 @@ from verify_submission import audit_archive, validate_csv
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_explicit_request_not_to_create_lead_overrides_previous_intent(self):
+        from consultant_impl import contact_intent
+        from dialog_memory import refresh_contact_permission
+
+        messages = [
+            dict(role="user", message_id="1", content="Оформите заявку"),
+            dict(role="user", message_id="2", content="Заявку не оформляйте."),
+        ]
+        memory = refresh_contact_permission(empty_memory(), messages)
+        self.assertEqual(memory["facts"][0]["status"], "declined")
+        with self.assertRaises(ValueError):
+            contact_intent("Оформите заявку", messages)
+
+    def test_phone_question_is_suppressed_after_explicit_contact_refusal(self):
+        class Client:
+            async def complete(self, messages):
+                return json.dumps(
+                    dict(
+                        answer="Можем продолжить консультацию.",
+                        kind="clarify",
+                        state="chatting",
+                        evidence_ids=[],
+                        lead=None,
+                        follow_up_question="Какой телефон оставить для связи?",
+                    )
+                )
+
+        class Search:
+            async def search(self, *args, **kwargs):
+                return {"hits": []}
+
+        reply = asyncio.run(
+            EnergyConsultant(Client())(
+                text="Телефон пока не готов оставлять.", history=[], search=Search()
+            )
+        )
+        self.assertNotIn("?", reply.text)
+        self.assertIsNone(reply.lead)
+
     def test_full_contact_flow_through_production_core_without_optional_summary_metadata(self):
         class Client:
             async def complete(self, messages):

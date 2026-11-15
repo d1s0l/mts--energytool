@@ -473,6 +473,8 @@ def reconcile_follow_up(data, messages, memory):
     """Suppress a known or pending slot, including reworded repeated questions."""
     field = question_field(data.get('follow_up_question'))
     known = known_fields(memory)
+    if any(f['field']=='contact_permission' and f['status']=='declined' for f in memory['facts']):
+        known.update({'phone','full_name','company'})
     if memory.get('asked'):
         pending = {q['field'] for q in memory['asked']
                    if q['scope'] in {'client', active_scope(memory)}}

@@ -13,7 +13,7 @@ from evaluate_answers import EvaluationClient, save
 from evaluate_dialogs import SCENARIOS, check_turn
 
 
-async def verify(kb, db, output, interval=15):
+async def verify(kb, db, output, interval=0):
     import httpx
     import psycopg
     from psycopg import sql
@@ -162,7 +162,7 @@ def main():
     parser.add_argument("--env", type=Path, required=True)
     parser.add_argument("--kb", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--interval", type=float, default=15)
+    parser.add_argument("--interval", type=float, default=0)
     args = parser.parse_args()
     from dotenv import dotenv_values
 

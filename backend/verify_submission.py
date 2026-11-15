@@ -111,7 +111,7 @@ def main():
     p.add_argument("--archive", type=Path, required=True)
     p.add_argument("--approved-requirements", type=Path)
     p.add_argument("--audit-only", action="store_true")
-    p.add_argument("--interval", type=float, default=15)
+    p.add_argument("--interval", type=float, default=0)
     args = p.parse_args()
     build_submission(args.archive)
     report = {"status": "running", "entry_point": "python solution.py", "transport_mocked": False}
@@ -128,6 +128,11 @@ def main():
         for name in ("PYTHONPATH", "TEST_DATABASE_URL", "DATABASE_URL", "API_ACCESS_TOKEN"):
             env.pop(name, None)
         env.update(MAX_WORKERS="1", LLM_MIN_INTERVAL=str(args.interval), SUBMISSION_TIMEOUT="1100")
+        report["execution_profile"] = {
+            "MAX_WORKERS": 1,
+            "LLM_MIN_INTERVAL": args.interval,
+            "SUBMISSION_TIMEOUT": 1100,
+        }
         questions = read_questions(args.questions) + CONTACT_CASES
         with tempfile.TemporaryDirectory(prefix="energytool-submit-") as temp:
             root = Path(temp)
