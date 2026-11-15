@@ -15,6 +15,9 @@ from app.consultant import ConsultantReply, ConsultantUnavailable
 from build_submission import build_submission
 from consultant_impl import (
     EnergyConsultant,
+    GroundingReviewer,
+    consultation_plan,
+    validate_project_claims,
     ModelClient,
     ModelConfig,
     contact_intent,
@@ -194,7 +197,8 @@ class ConsultantTests(unittest.TestCase):
             )
         )
         self.assertNotIn(question, reply.text)
-        self.assertTrue(reply.text.endswith("Как сейчас собираете показания?"))
+        self.assertEqual(client.calls, 1)
+        self.assertTrue(reply.text.strip())
 
     def test_user_can_request_answer_without_follow_up(self):
         reply = asyncio.run(
@@ -381,6 +385,225 @@ class ConsultantTests(unittest.TestCase):
                 self.assertTrue(all("/" not in name for name in z.namelist()))
 
 
+
+class GroundingReviewTests(unittest.TestCase):
+    @staticmethod
+    def verdict(**changes):
+        result = {"supported": True, "relevant": True, "conditions_preserved": True,
+                  "question_appropriate": True, "issues": []}
+        result.update(changes)
+        return json.dumps(result, ensure_ascii=False)
+
+    def test_semantic_rejection_repairs_otherwise_valid_quote(self):
+        # A valid citation and no invented numbers do not establish entailment.
+        bad = output(answer="Стоимость фиксирована для любого проекта.")
+        client = Client([bad, self.verdict(supported=False,
+            issues=["Источник говорит, что итог зависит от проекта, а не фиксирован."]),
+            output(), self.verdict()])
+        reply = asyncio.run(EnergyConsultant(client, reviewer=GroundingReviewer(client))(
+            text="Сколько стоит?", history=[], search=Search()))
+        self.assertEqual(client.calls, 4)
+        self.assertNotIn("фиксирована", reply.text)
+        self.assertIn("зависит", reply.text)
+
+    def test_missing_context_question_is_repaired_by_review(self):
+        client = Client([output(follow_up_question=None),
+            self.verdict(question_appropriate=False, issues=["Уточни количество приборов."]),
+            output(), self.verdict()])
+        reply = asyncio.run(EnergyConsultant(client, reviewer=GroundingReviewer(client))(
+            text="Хочу подобрать учет для склада. С чего начать?", history=[], search=Search()))
+        self.assertTrue(reply.text.endswith("Сколько приборов нужно подключить?"))
+
+    def test_closed_faq_can_end_without_unnecessary_question(self):
+        client = Client([output(follow_up_question=None), self.verdict()])
+        reply = asyncio.run(EnergyConsultant(client, reviewer=GroundingReviewer(client))(
+            text="Какая ориентировочная стоимость?", history=[], search=Search()))
+        self.assertEqual(client.calls, 2)
+        self.assertNotIn("?", reply.text)
+
+    def test_rejected_answers_are_not_returned_after_failed_repair(self):
+        rejected = self.verdict(relevant=False, issues=["Ответ на другую тему."])
+        client = Client([output(), rejected, output(), rejected])
+        with self.assertRaises(ConsultantUnavailable):
+            asyncio.run(EnergyConsultant(client, reviewer=GroundingReviewer(client))(
+                text="Вопрос", history=[], search=Search()))
+
+    def test_review_must_return_booleans_not_truthy_strings(self):
+        client = Client([self.verdict(supported="false")])
+        with self.assertRaises(ConsultantUnavailable):
+            asyncio.run(GroundingReviewer(client).check(
+                json.loads(output()), "Ответ", [], {"fact": HIT}))
+
+    def test_semantic_review_allows_equivalent_support_formatting(self):
+        draft = output(answer_support=[{"text": "Ориентир: 25 000 рублей в год. Итог зависит от проекта.",
+                                       "evidence_id": "fact", "quote": HIT["text"]}])
+        client = Client([draft, self.verdict()])
+        reply = asyncio.run(EnergyConsultant(client, reviewer=GroundingReviewer(client))(
+            text="Цена?", history=[], search=Search()))
+        self.assertEqual(client.calls, 2)
+        self.assertIn("25 000", reply.text)
+
+    def test_production_generation_does_not_need_duplicated_quotes(self):
+        draft = json.loads(output())
+        draft.pop("answer_support")
+        client = Client([json.dumps(draft, ensure_ascii=False), self.verdict()])
+        reply = asyncio.run(EnergyConsultant(client, reviewer=GroundingReviewer(client))(
+            text="Цена?", history=[], search=Search()))
+        self.assertEqual(client.calls, 2)
+        self.assertIn("25 000", reply.text)
+
+    def test_factory_enables_review_by_default(self):
+        from consultant_impl import create_consultant
+        with patch.dict(os.environ, {"LLM_BASE_URL": "http://provider", "LLM_API_KEY": "test-only",
+                                    "LLM_MODEL": "platform-model"}, clear=True):
+            consultant = create_consultant()
+        self.assertIsInstance(consultant.reviewer, GroundingReviewer)
+
+
+
+class FollowUpAndTariffRegressionTests(unittest.TestCase):
+    def test_embedded_followup_with_intro_is_rendered_once(self):
+        draft=output(answer='Сравните счета. Уточните: месячный расход тоже вырос?',kind='clarify',
+                     follow_up_question='Месячный расход тоже вырос?',evidence_ids=[])
+        reply=asyncio.run(EnergyConsultant(Client([draft]))(text='Счёт вырос',history=[],search=Search()))
+        self.assertEqual(reply.text,'Сравните счета.\n\nМесячный расход тоже вырос?')
+        self.assertEqual(reply.text.count('?'),1)
+
+    def test_reworded_embedded_followup_uses_separate_question(self):
+        draft=output(answer='Количество известно. Нужна разбивка по складам или арендаторам?',kind='clarify',
+                     follow_up_question='Какую разбивку учёта нужно видеть?',evidence_ids=[])
+        reply=asyncio.run(EnergyConsultant(Client([draft]))(text='Что ещё нужно?',history=[],search=Search()))
+        self.assertEqual(reply.text,'Количество известно.\n\nКакую разбивку учёта нужно видеть?')
+
+    def test_evening_profile_does_not_establish_weaker_solar_economics(self):
+        with self.assertRaisesRegex(ValueError,'Unknown daytime load'):
+            validate_project_claims('Если основная нагрузка вечером, перекрываемая часть меньше, и экономика слабее.',
+                                    {'field':'daytime_consumption'})
+        validate_project_claims('Если днём потребление мало, эффект будет меньше.',{'field':'daytime_consumption'})
+
+    def test_correction_succeeds_without_repeating_pending_model_question(self):
+        draft=output(answer='Принято, 45 счётчиков.', kind='clarify', evidence_ids=[],
+                     follow_up_question='Какие модели счётчиков стоят на складах?')
+        client=Client([draft])
+        history=[{'role':'user','content':'40 счётчиков'},
+                 {'role':'assistant','content':'Какие модели счётчиков установлены на складах?'}]
+        reply=asyncio.run(EnergyConsultant(client)(text='Исправление: 45, а не 40.',
+            history=history,search=Search()))
+        self.assertEqual(reply.text,'Принято, 45 счётчиков.')
+        self.assertEqual(client.calls,1)
+
+    def test_correction_allows_null_question_when_previous_slot_is_pending(self):
+        draft=output(answer='Принято, 45 счётчиков.', kind='clarify', evidence_ids=[],follow_up_question=None)
+        reply=asyncio.run(EnergyConsultant(Client([draft]))(text='Исправление: 45, а не 40.',
+            history=[{'role':'assistant','content':'Какие модели счётчиков установлены?'}],search=Search()))
+        self.assertEqual(reply.text,'Принято, 45 счётчиков.')
+
+    def test_pending_question_for_other_object_does_not_suppress_current_question(self):
+        from consultant_impl import reconcile_follow_up
+        memory={'facts':[{'field':'active_object','scope':'client','status':'provided','value':'Второй склад'}],
+                'asked':[{'field':'device_models','scope':'Первый склад'}]}
+        data={'answer':'Уточним приборы.', 'follow_up_question':'Какие модели счётчиков установлены?'}
+        self.assertFalse(reconcile_follow_up(data,[{'role':'user','content':'Второй склад'}],memory))
+        self.assertIsNotNone(data['follow_up_question'])
+
+    def test_price_category_is_not_single_or_dual_tariff(self):
+        from consultant_impl import validate_tariff_claims
+        with self.assertRaisesRegex(ValueError,'single/dual'):
+            validate_tariff_claims('Сравним счета.', 'Какая у вас ценовая категория — двухтарифная или однотарифная?',
+                                   [{'role':'user','content':'Счёт вырос'}])
+
+    def test_tentative_price_category_requires_conditional_explanation(self):
+        from consultant_impl import validate_tariff_claims
+        messages=[{'role':'user','content':'Кажется, четвёртая. Что проверить?'}]
+        with self.assertRaisesRegex(ValueError,'tentative'):
+            validate_tariff_claims('В четвёртой категории мощность оплачивается отдельно.', None,messages)
+        validate_tariff_claims('Если четвёртая категория подтвердится, проверьте плату за мощность.',None,messages)
+
+    def test_evening_hours_alone_do_not_establish_expensive_tariff(self):
+        from consultant_impl import validate_tariff_claims
+        messages=[{'role':'user','content':'Стали работать вечером, счёт вырос.'}]
+        with self.assertRaisesRegex(ValueError,'Evening'):
+            validate_tariff_claims('Если стали работать вечером, вероятно, нагрузка перенеслась в дорогие часы.',None,messages)
+        validate_tariff_claims('Если по вашему тарифу вечерние часы дороже, это может влиять на счёт.',None,messages)
+
+    def test_reviewer_sees_only_cited_fragments(self):
+        class RecordingClient:
+            async def complete(self,messages):
+                self.payload=json.loads(messages[-1]['content'])
+                return GroundingReviewTests.verdict()
+        client=RecordingClient()
+        asyncio.run(GroundingReviewer(client).check(json.loads(output()),'Ответ',[],
+                    {'fact':HIT,'other':{**HIT,'text':'Другой продукт'}}))
+        self.assertEqual([e['id'] for e in client.payload['evidence']],['fact'])
+
+
+class ConsultationPlanningTests(unittest.TestCase):
+    def test_roof_age_is_asked_but_not_when_already_given(self):
+        plan = consultation_plan([{"role": "user", "content": "У нас старая шиферная крыша"}])
+        self.assertEqual(plan["field"], "roof_age")
+        self.assertIsNone(consultation_plan([
+            {"role": "user", "content": "У нас старая шиферная крыша, ей 20 лет"}]))
+
+    def test_model_question_is_selected_for_operator_compatibility(self):
+        plan = consultation_plan([{"role": "user", "content": "В счетчиках симки другого оператора. Их надо менять?"}])
+        self.assertEqual(plan["field"], "device_models")
+
+    def test_completed_slot_is_not_asked_again(self):
+        messages = [{"role": "user", "content": "Симки другого оператора надо менять?"},
+                    {"role": "assistant", "content": "Какие у вас модели счётчиков?"},
+                    {"role": "user", "content": "Не знаю модель, подскажите, где посмотреть"}]
+        self.assertIsNone(consultation_plan(messages))
+
+    def test_night_and_evening_project_needs_daytime_data(self):
+        messages = [{"role": "user", "content": "Хотим солнечную станцию, потребление в основном вечером"},
+                    {"role": "user", "content": "У сетевой станции есть смысл?"}]
+        plan = consultation_plan(messages)
+        self.assertEqual(plan["field"], "daytime_consumption")
+        with self.assertRaises(ValueError):
+            validate_project_claims("Смысл есть, совпадение будет небольшим.", plan)
+        validate_project_claims("Может иметь смысл, если есть потребление днём.", plan)
+
+    def test_unsupported_workshop_design_is_rejected(self):
+        with self.assertRaises(ValueError):
+            validate_project_claims("Для учёта нужно, чтобы на каждый цех стоял свой прибор учёта.", None)
+        validate_project_claims("Можно видеть потребление по цехам. Схему подключения проверит специалист.", None)
+
+    def test_tenant_plan_uses_existing_history_and_asks_meter_count(self):
+        messages = [{"role": "user", "content": "Хотим учет по арендаторам"},
+                    {"role": "user", "content": "Приборы есть. Часть присылает фото, часть обходит техник. С чего начать?"}]
+        self.assertEqual(consultation_plan(messages)["field"], "meter_count")
+        messages.append({"role": "user", "content": "Всего 40 счетчиков, с чего начать подключение?"})
+        self.assertEqual(consultation_plan(messages)["field"], "device_models")
+
+    def test_loss_data_split_is_not_inferred_from_archive_length(self):
+        messages = [{"role": "user", "content": "Мы электросетевая компания, ищем потери"},
+                    {"role": "user", "content": "Архив два года, суточные данные. Хватит для начала?"}]
+        self.assertEqual(consultation_plan(messages)["field"], "day_night_split")
+
+    def test_missing_follow_up_is_rendered_from_plan_without_extra_generation(self):
+        client = Client([output(answer="Нужно уточнить состояние кровли.", kind="clarify",
+                                follow_up_question=None)])
+        reply = asyncio.run(EnergyConsultant(client)(
+            text="У нас старая шиферная крыша", history=[], search=Search()))
+        self.assertTrue(reply.text.endswith("Сколько лет вашей кровле?"))
+        self.assertEqual(client.calls, 1)
+
+    def test_no_question_request_takes_precedence_over_plan(self):
+        client = Client([output(answer="Нужно уточнить состояние кровли.", kind="clarify",
+                                follow_up_question=None)])
+        reply = asyncio.run(EnergyConsultant(client)(
+            text="У нас старая шиферная крыша. Ответьте без вопросов.", history=[], search=Search()))
+        self.assertNotIn("?", reply.text)
+
+    def test_power_category_question_is_not_mistaken_for_sim(self):
+        self.assertIsNone(consultation_plan([{"role": "user", "content":
+            "У нас максимальная мощность 800 кВт. Можно менять категорию?"}]))
+
+    def test_closed_ocr_fact_does_not_get_generic_sales_question(self):
+        self.assertIsNone(consultation_plan([
+            {"role": "user", "content": "Распознается ли год производства счетчика?"}]))
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -409,6 +632,8 @@ def test_default_consultant_connects_to_existing_session_and_lead_api(tmp_path, 
 
     def request(client, messages):
         payload = json.loads(messages[-1]["content"])
+        if isinstance(payload, dict) and "answer" in payload and "dialog" in payload:
+            return GroundingReviewTests.verdict()
         if isinstance(payload, list):
             return json.dumps({"facts": [payload[0]["content"]]}, ensure_ascii=False)
         return json.dumps(

@@ -25,7 +25,12 @@ def test_lead_creation_retry_errors_and_retention(tmp_path, monkeypatch):
     }
 
     async def summarize(*, history):
-        assert history == [{"role": "user", "content": "Нужен учёт по складам"}]
+        from app.lead_actions import contact_form_message
+
+        assert history == [
+            {"role": "user", "content": "Нужен учёт по складам"},
+            {"role": "user", "content": contact_form_message(contacts)},
+        ]
         return "Нужен учёт потребления по складам."
 
     async def timeout(*, history):
@@ -97,7 +102,7 @@ def test_lead_creation_retry_errors_and_retention(tmp_path, monkeypatch):
                     "SELECT count(*) AS count FROM leads WHERE session_id = %s", (session_id,)
                 )
                 assert (await cursor.fetchone())["count"] == 1
-                assert len(client.get(session).json()["messages"]) == 1
+                assert len(client.get(session).json()["messages"]) == 3
                 assert client.delete(session).status_code == 204
                 assert client.get(path).status_code == 404
                 assert client.post(path, json=contacts).status_code == 404

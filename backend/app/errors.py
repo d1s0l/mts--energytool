@@ -19,6 +19,7 @@ def register_errors(app: FastAPI) -> None:
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException):
         messages = {
+            "model_rate_limited": "Сервис модели ограничил частоту запросов. Повторите позже.",
             "access_denied": "Нет доступа к этому диалогу",
             "request_conflict": "Идентификатор сообщения уже использован для другого текста",
             "session_not_found": "Диалог не найден",
@@ -30,7 +31,9 @@ def register_errors(app: FastAPI) -> None:
             "consultant_timeout": "Консультант не ответил вовремя",
         }
         if isinstance(exc.detail, str) and exc.detail in messages:
-            return error_response(exc.status_code, exc.detail, messages[exc.detail])
+            response = error_response(exc.status_code, exc.detail, messages[exc.detail])
+            response.headers.update(exc.headers or {})
+            return response
         return error_response(exc.status_code, "http_error", str(exc.detail))
 
     @app.exception_handler(RequestValidationError)

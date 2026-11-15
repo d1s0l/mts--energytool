@@ -57,6 +57,13 @@ class RetrievalTests(unittest.TestCase):
             self.assertEqual(result['hits'], [])
             self.assertTrue(result['needs_review'])
 
+    def test_evening_is_not_expanded_to_night(self):
+        from rag_search import SYNONYMS, _terms
+        evening = _terms("вечер")[0]
+        night = _terms("ночь")[0]
+        self.assertNotIn(night, SYNONYMS.get(evening, set()))
+        self.assertNotIn(evening, SYNONYMS.get(night, set()))
+
     def test_invalid_configuration(self):
         for args in [{'top_k':0},{'mode':'oops'},{'timeout':0},{'overlap_chars':2000}]:
             with self.assertRaises(ValueError):

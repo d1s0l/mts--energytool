@@ -79,6 +79,7 @@ def test_archive_runs_without_web_backend_and_fails_explicitly_without_model(tmp
             "consultant.py",
             "consultant_impl.py",
             "rag_search.py",
+            "dialog_memory.py",
             "requirements.txt",
         }
         zipped.extractall(tmp_path / "standalone")
