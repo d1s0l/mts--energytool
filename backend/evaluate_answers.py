@@ -40,11 +40,12 @@ class EvaluationClient(ModelClient):
         self.calls += 1
         started = time.monotonic()
         record = {"messages": copy.deepcopy(messages), "status": "started"} if self.trace else None
+        cached_before=self.cache_hits
         try:
             content = self._request(messages)
             self.outputs.append(content)
             if record is not None:
-                record.update(output=content, status="answered")
+                record.update(output=content, status="answered",cache_hit=self.cache_hits>cached_before)
             return content
         except Exception as exc:
             if record is not None:

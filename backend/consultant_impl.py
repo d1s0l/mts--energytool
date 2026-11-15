@@ -1,12 +1,15 @@
 """Shared grounded consultant for HTTP and the standalone submission."""
 
 import asyncio
+from collections import OrderedDict
 from contextvars import ContextVar
+import hashlib
 import json
 import logging
 import os
 import re
 import time
+import threading
 import urllib.error
 import urllib.request
 from email.utils import parsedate_to_datetime
@@ -213,6 +216,9 @@ class ModelClient:
         self._cooldown_until = 0.0
         self._dispatch_lock = asyncio.Lock()
         self._last_dispatch = None
+        self._cache_lock=threading.Lock()
+        self._response_cache=OrderedDict()
+        self.cache_hits=0
 
     def _request(self, messages):
         if self._cooldown_until > time.monotonic():
@@ -227,6 +233,18 @@ class ModelClient:
         if cfg.reasoning_effort:
             payload["reasoning_effort"] = cfg.reasoning_effort
         body = json.dumps(payload).encode()
+        deadline=MODEL_DEADLINE.get()
+        if deadline is not None and deadline<=time.monotonic():
+            raise ConsultantUnavailable('Model turn deadline reached')
+        cache_key=hashlib.sha256(body).hexdigest()
+        with self._cache_lock:
+            entry=self._response_cache.get(cache_key)
+            if entry and entry[0]>time.monotonic():
+                self._response_cache[cache_key]=(time.monotonic()+180,entry[1])
+                self._response_cache.move_to_end(cache_key)
+                self.cache_hits+=1
+                return entry[1]
+            self._response_cache.pop(cache_key,None)
         for attempt in range(2):
             deadline = MODEL_DEADLINE.get()
             remaining = cfg.timeout if deadline is None else min(cfg.timeout, deadline-time.monotonic())
@@ -254,6 +272,12 @@ class ModelClient:
                     or not content.strip()
                 ):
                     raise ValueError("Incomplete model response")
+                # Exact full-input memoization lets a 429 retry resume after a completed stage.
+                # No request headers, API credentials, or disk persistence enter this cache.
+                with self._cache_lock:
+                    self._response_cache[cache_key]=(time.monotonic()+180,content)
+                    self._response_cache.move_to_end(cache_key)
+                    while len(self._response_cache)>64:self._response_cache.popitem(last=False)
                 return content
             except urllib.error.HTTPError as exc:
                 if exc.code == 429:

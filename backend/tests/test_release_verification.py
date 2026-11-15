@@ -28,6 +28,23 @@ from verify_submission import audit_archive, validate_csv
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_model_cache_reuses_exact_input_but_does_not_cross_user_contexts(self):
+        import io
+
+        client = ModelClient(ModelConfig("http://provider", "dummy", "test"))
+
+        def response(*args, **kwargs):
+            return io.BytesIO(b'{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}')
+
+        one = [{"role": "user", "content": "session:one, message:u1"}]
+        two = [{"role": "user", "content": "session:two, message:u2"}]
+        with patch("urllib.request.urlopen", side_effect=response) as call:
+            self.assertEqual(client._request(one), "ok")
+            self.assertEqual(client._request(one), "ok")
+            self.assertEqual(client._request(two), "ok")
+            self.assertEqual(call.call_count, 2)
+            self.assertEqual(client.cache_hits, 1)
+
     def test_lead_action_without_complete_verified_contacts_is_rejected(self):
         class Client:
             async def complete(self, messages):
