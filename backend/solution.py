@@ -12,11 +12,11 @@ from collections import deque
 from pathlib import Path
 
 try:
-    from consultant import Consultant, ConsultantReply, ConsultantUnavailable, HistoryMessage
+    from consultant import Consultant, ConsultantReply, ConsultantUnavailable, HistoryMessage, ModelRateLimited
 except ModuleNotFoundError as exc:
     if exc.name != "consultant":
         raise
-    from app.consultant import Consultant, ConsultantReply, ConsultantUnavailable, HistoryMessage
+    from app.consultant import Consultant, ConsultantReply, ConsultantUnavailable, HistoryMessage, ModelRateLimited
 
 try:
     from rag_search import Config, KnowledgeSearch
@@ -90,6 +90,7 @@ async def answer_questions(
     )
     answers = [fallback] * len(questions)
     search = SubmissionSearch(engine)
+    rate_limit_retries = {}
 
     async def worker():
         while pending:
@@ -120,6 +121,16 @@ async def answer_questions(
                 if len(reply.text) > 10000:
                     raise ValueError("An answer exceeds the platform limit of 10000 characters")
                 answers[index] = reply.text
+            except ModelRateLimited as exc:
+                retries = rate_limit_retries.get(index, 0)
+                can_retry = retries < 2 and (deadline is None or deadline-time.monotonic() > exc.retry_after+55)
+                if can_retry:
+                    rate_limit_retries[index] = retries+1
+                    print(f'Question {index+1} rate limited; waiting before retry',file=sys.stderr)
+                    await asyncio.sleep(exc.retry_after)
+                    pending.appendleft((index, questions[index]))
+                else:
+                    print(f'Question {index+1} failed (ModelRateLimited)',file=sys.stderr)
             except Exception as exc:
                 # Never emit provider exception text: it may contain secrets or contacts.
                 print(f"Question {index + 1} failed ({type(exc).__name__})", file=sys.stderr)

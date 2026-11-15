@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import os
 import secrets
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -13,7 +14,7 @@ from evaluate_answers import EvaluationClient, save
 from evaluate_dialogs import SCENARIOS, check_turn
 
 
-async def verify(kb, db, output, interval=0):
+async def verify(kb, db, output, interval=0, turn_interval=45):
     import httpx
     import psycopg
     from psycopg import sql
@@ -32,6 +33,7 @@ async def verify(kb, db, output, interval=0):
     model = EvaluationClient(ModelConfig.from_env(), interval=interval, trace=True)
     scoped_db = make_conninfo(db, options=f"-c search_path={schema}", connect_timeout=5)
     access = secrets.token_urlsafe(24)
+    last_turn_started = 0.0
     async with await psycopg.AsyncConnection.connect(
         db, autocommit=True, row_factory=dict_row
     ) as conn:
@@ -69,7 +71,31 @@ async def verify(kb, db, output, interval=0):
                                     sid = response.json()["id"]
                                 path = f"/api/sessions/{sid}"
                                 request = {"text": text, "client_message_id": str(uuid4())}
-                                response = await client.post(path + "/messages", json=request)
+                                await asyncio.sleep(
+                                    max(0, turn_interval - (time.monotonic() - last_turn_started))
+                                )
+                                last_turn_started = time.monotonic()
+                                for attempt in range(3):
+                                    response = await client.post(path + "/messages", json=request)
+                                    if response.status_code != 429 or attempt == 2:
+                                        break
+                                    delay = float(response.headers.get("Retry-After", "60"))
+                                    if delay > 120:
+                                        break
+                                    row["rate_limit_retries"] = attempt + 1
+                                    report["pending_turn"] = {
+                                        "scenario": name,
+                                        "index": index,
+                                        "phase": "cooldown",
+                                        "retry_after": delay,
+                                    }
+                                    save(output, report)
+                                    print(
+                                        f"{name}/{index + 1}: rate limited, waiting {delay:g}s",
+                                        flush=True,
+                                    )
+                                    await asyncio.sleep(delay)
+                                report.pop("pending_turn", None)
                                 row["http_status"] = response.status_code
                                 if response.status_code == 429:
                                     report["status"] = "rate_limited"
@@ -163,6 +189,7 @@ def main():
     parser.add_argument("--kb", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--interval", type=float, default=0)
+    parser.add_argument("--turn-interval", type=float, default=45)
     args = parser.parse_args()
     from dotenv import dotenv_values
 
@@ -180,7 +207,7 @@ def main():
         )
         return 1
     try:
-        report = asyncio.run(verify(args.kb, db, args.output, args.interval))
+        report = asyncio.run(verify(args.kb, db, args.output, args.interval, args.turn_interval))
     except Exception as exc:
         report = {
             "status": "unavailable",

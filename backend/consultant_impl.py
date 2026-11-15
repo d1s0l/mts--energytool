@@ -792,7 +792,14 @@ class EnergyConsultant:
                 if data.get("state") not in {"chatting", "awaiting_contacts"}:
                     raise ValueError("Invalid state")
                 data["verified_memory"] = next_memory
-                if self.reviewer is not None:
+                # Only the application describes the result of a fully validated lead action.
+                # There are no generated product claims left in this acknowledgement to review.
+                lead_acknowledgement = lead is not None and data['kind'] == 'contacts'
+                if lead_acknowledgement:
+                    answer = 'Данные для заявки готовы.'
+                    data['answer'] = answer
+                    data['follow_up_question'] = None
+                if self.reviewer is not None and not lead_acknowledgement:
                     await self.reviewer.check(data, answer, messages, evidence)
                 return ConsultantReply(
                     text=answer.strip(),

@@ -10,7 +10,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 from zipfile import ZipFile
 
 from app.consultant import ConsultantReply, ConsultantUnavailable
@@ -22,6 +22,82 @@ from verify_submission import audit_archive, validate_csv
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_batch_waits_and_retries_rate_limited_question(self):
+        from app.consultant import ModelRateLimited
+        from solution import answer_questions
+
+        calls = []
+
+        async def consultant(**kwargs):
+            calls.append(kwargs["text"])
+            if len(calls) == 1:
+                raise ModelRateLimited(2)
+            return ConsultantReply(text="Готово.")
+
+        with patch("solution.asyncio.sleep", new_callable=AsyncMock) as sleep:
+            answers = asyncio.run(
+                answer_questions(
+                    [("1", "Вопрос")], object(), consultant, 1, deadline=time.monotonic() + 120
+                )
+            )
+        self.assertEqual(answers, ["Готово."])
+        self.assertEqual(len(calls), 2)
+        sleep.assert_awaited_once_with(2)
+
+    def test_batch_does_not_wait_past_global_deadline(self):
+        from app.consultant import ModelRateLimited
+        from solution import answer_questions
+
+        async def consultant(**kwargs):
+            raise ModelRateLimited(60)
+
+        with patch("solution.asyncio.sleep", new_callable=AsyncMock) as sleep:
+            answers = asyncio.run(
+                answer_questions(
+                    [("1", "Вопрос")], object(), consultant, 1, deadline=time.monotonic() + 10
+                )
+            )
+        self.assertIn("технического сбоя", answers[0])
+        sleep.assert_not_awaited()
+
+    def test_verified_contact_action_uses_application_acknowledgement_without_llm_review(self):
+        class Client:
+            async def complete(self, messages):
+                return json.dumps(
+                    dict(
+                        answer="Заявка уже отправлена.",
+                        kind="contacts",
+                        state="chatting",
+                        evidence_ids=[],
+                        lead={
+                            "full_name": "Тест Тестов",
+                            "company": "Альфа",
+                            "phone": "+79990000000",
+                        },
+                        action="create_lead",
+                        lead_intent_quote="Оформите заявку",
+                        follow_up_question=None,
+                    )
+                )
+
+        class Search:
+            async def search(self, *args, **kwargs):
+                return {"hits": []}
+
+        class Reviewer:
+            async def check(self, *args, **kwargs):
+                raise AssertionError("Unexpected extra model call")
+
+        reply = asyncio.run(
+            EnergyConsultant(Client(), reviewer=Reviewer())(
+                text="Оформите заявку: Тест Тестов, компания Альфа, телефон +79990000000.",
+                history=[],
+                search=Search(),
+            )
+        )
+        self.assertEqual(reply.text, "Данные для заявки готовы.")
+        self.assertEqual(reply.requested_action, "create_lead")
+
     def test_direct_contact_request_gets_source_based_summary_without_object_facts(self):
         class Client:
             async def complete(self, messages):
