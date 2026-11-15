@@ -81,7 +81,7 @@ class DiagnosticRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch('evaluate_dialogs.SCENARIOS',
                 {'contacts_and_correction':[str(n) for n in range(7)]}):
             run(report,Path(tmp)/'report.json',consultant,
-                SimpleNamespace(calls=0,traces=[]),SimpleNamespace(last_result=None))
+                SimpleNamespace(calls=0,traces=[]),SimpleNamespace(last_result=None),checks=False)
         self.assertEqual(received[-1],(empty_memory(),[]))
 
 

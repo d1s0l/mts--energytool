@@ -175,7 +175,7 @@ async def run(consultant: Consultant, data_dir: Path, output: Path, max_workers:
     if not 1 <= max_workers <= 8:
         raise ValueError("MAX_WORKERS must be between 1 and 8")
     questions = read_questions(data_dir / "questions.csv")
-    deadline = time.monotonic() + min(1150, max(1, float(os.getenv("SUBMISSION_TIMEOUT", "1100"))))
+    deadline = time.monotonic() + min(1120, max(1, float(os.getenv("SUBMISSION_TIMEOUT", "1100"))))
     fallback = ["Временный технический сбой. Повторите вопрос." for _ in questions]
     write_submission(output, questions, fallback)
     engine = await asyncio.to_thread(

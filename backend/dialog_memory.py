@@ -83,6 +83,27 @@ def refresh_contact_permission(memory, messages):
         source_message_id=current['message_id'])], messages)
 
 
+def refresh_contact_phone(memory, messages):
+    """An unambiguous explicit phone correction cannot resurrect an older number."""
+    current = messages[-1]
+    decision = contact_permission(current['content'])
+    if decision and decision[0] == 'declined':
+        return memory
+    correcting = re.search(r'исправ|замен|обнов|ошибочн', current['content'], re.I)
+    known = (any(f['field'] == 'phone' for f in memory['facts']) or memory.get('lead')
+             or re.search(r'(?:телефон|номер).{0,25}(?:заявк|связ)|в заявке', current['content'], re.I))
+    if not ((decision and decision[0] == 'provided') or (correcting and known)):
+        return memory
+    phones = re.findall(r'\+?\d[\d ()-]{8,30}\d', current['content'])
+    valid = [(raw, re.sub(r'[ ()-]', '', raw)) for raw in phones]
+    valid = [(raw, value) for raw, value in valid if re.fullmatch(r'\+?\d{10,15}', value)]
+    if len({value for _, value in valid}) != 1:
+        return memory
+    quote, value = valid[0]
+    return merge_memory(memory, [dict(field='phone', scope='client', status='provided', value=value,
+        quote=quote, source_message_id=current['message_id'])], messages)
+
+
 def merge_memory(previous, updates, messages):
     """Only quoted user statements can change facts; older turns cannot undo corrections."""
     memory = copy.deepcopy(previous or empty_memory())

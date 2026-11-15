@@ -39,7 +39,7 @@ def main():
     for file in sorted(files):
         digest.update(str(file.relative_to(root)).encode());digest.update(file.read_bytes())
     for key in ('LLM_MODEL','OPENAI_MODEL','GEN_MODEL','MAX_TOKENS','TEMPERATURE','RAG_MODE','EMB_MODEL','RERANKER_MODEL',
-                'LLM_TIMEOUT','LLM_REASONING_EFFORT','TOP_K','RERANKER_TOP_N',
+                'LLM_TIMEOUT','LLM_REASONING_EFFORT','LLM_MIN_INTERVAL','TOP_K','RERANKER_TOP_N',
                 'RAG_CHUNK_CHARS','RAG_OVERLAP_CHARS','RAG_CANDIDATES'):
         digest.update((key+'='+env.get(key,'')).encode())
     digest.update(args.kb.read_bytes())
@@ -106,7 +106,7 @@ def main():
         # Explicitly select the offline suites; no external model/DB calls.
         test_code=("import unittest; l=unittest.TestLoader(); "
             "s=unittest.TestSuite(l.loadTestsFromName(n) for n in "
-            "('test_dialog_memory','test_consultant_core','test_evaluation_limits','test_diagnostic_runner')); "
+            "('test_dialog_memory','test_consultant_core','test_evaluation_limits','test_diagnostic_runner','test_release_verification')); "
             "r=unittest.TextTestRunner(verbosity=2).run(s); raise SystemExit(not r.wasSuccessful())")
         if stage('offline-core',[sys.executable,'-c',test_code]):
             manifest['status']='offline_tests_failed';save_manifest();return 1

@@ -1,6 +1,7 @@
 """Shared grounded consultant for HTTP and the standalone submission."""
 
 import asyncio
+from contextvars import ContextVar
 import json
 import logging
 import os
@@ -18,11 +19,12 @@ except ModuleNotFoundError:
 
 
 from dialog_memory import (
-    active_scope, check_lead_against_memory, indexed_messages, known_fields, merge_memory, remember_question, question_field, manager_summary, verified_memory_updates, select_active_object, contact_permission, refresh_contact_permission,
+    active_scope, check_lead_against_memory, indexed_messages, known_fields, merge_memory, remember_question, question_field, manager_summary, verified_memory_updates, select_active_object, contact_permission, refresh_contact_permission, refresh_contact_phone,
 )
 
 
 log = logging.getLogger(__name__)
+MODEL_DEADLINE = ContextVar('energytool_model_deadline', default=None)
 
 
 POLICY = """Ты консультант МТС EnergyTool. Отвечай по-русски, понятно и кратко.
@@ -162,6 +164,7 @@ class ModelConfig:
     timeout: float = 20.0
     max_workers: int = 3
     reasoning_effort: str = ""
+    min_interval: float = 0.0
 
     @classmethod
     def from_env(cls):
@@ -177,6 +180,7 @@ class ModelConfig:
             timeout=float(setting("LLM_TIMEOUT") or "20"),
             max_workers=int(setting("MAX_WORKERS") or "3"),
             reasoning_effort=setting("LLM_REASONING_EFFORT"),
+            min_interval=float(setting("LLM_MIN_INTERVAL") or "0"),
         )
         if (
             not config.base_url.startswith(("http://", "https://"))
@@ -192,6 +196,8 @@ class ModelConfig:
             raise ValueError("Invalid model configuration")
         if not 0 <= config.temperature <= 2:
             raise ValueError("Invalid temperature")
+        if not 0 <= config.min_interval <= 60:
+            raise ValueError('Invalid model request interval')
         if config.reasoning_effort not in {"", "low", "medium", "high", "xhigh"}:
             raise ValueError("Invalid reasoning effort")
         return config
@@ -202,6 +208,8 @@ class ModelClient:
         self.config = config
         self._slots = asyncio.Semaphore(config.max_workers)
         self._cooldown_until = 0.0
+        self._dispatch_lock = asyncio.Lock()
+        self._last_dispatch = None
 
     def _request(self, messages):
         if self._cooldown_until > time.monotonic():
@@ -217,6 +225,10 @@ class ModelClient:
             payload["reasoning_effort"] = cfg.reasoning_effort
         body = json.dumps(payload).encode()
         for attempt in range(2):
+            deadline = MODEL_DEADLINE.get()
+            remaining = cfg.timeout if deadline is None else min(cfg.timeout, deadline-time.monotonic())
+            if remaining <= 0:
+                raise ConsultantUnavailable('Model turn deadline reached')
             req = urllib.request.Request(
                 cfg.base_url + "/chat/completions",
                 data=body,
@@ -226,7 +238,7 @@ class ModelClient:
                 },
             )
             try:
-                with urllib.request.urlopen(req, timeout=cfg.timeout) as response:
+                with urllib.request.urlopen(req, timeout=remaining) as response:
                     raw = response.read(2_000_001)
                 if len(raw) > 2_000_000:
                     raise ValueError("Oversized model response")
@@ -270,6 +282,11 @@ class ModelClient:
 
     async def complete(self, messages):
         async with self._slots:
+            if self.config.min_interval:
+                async with self._dispatch_lock:
+                    if self._last_dispatch is not None:
+                        await asyncio.sleep(max(0, self.config.min_interval-(time.monotonic()-self._last_dispatch)))
+                    self._last_dispatch = time.monotonic()
             task = asyncio.create_task(asyncio.to_thread(self._request, messages))
             try:
                 return await asyncio.shield(task)
@@ -574,6 +591,16 @@ class EnergyConsultant:
         self.reviewer = reviewer
 
     async def summarize(self, *, history):
+        token = MODEL_DEADLINE.set(time.monotonic()+50)
+        try:
+            async with asyncio.timeout(50):
+                return await self._summarize(history=history)
+        except TimeoutError:
+            return user_summary(history)
+        finally:
+            MODEL_DEADLINE.reset(token)
+
+    async def _summarize(self, *, history):
         try:
             raw = await self.client.complete(
                 [
@@ -594,10 +621,21 @@ class EnergyConsultant:
             return user_summary(history)
 
     async def __call__(self, *, text, history, search, memory=None, message_id=None):
+        # Generation, repair and review share the HTTP adapter's one-minute budget.
+        token = MODEL_DEADLINE.set(time.monotonic()+55)
+        try:
+            async with asyncio.timeout(55):
+                return await self._consult(text=text, history=history, search=search,
+                                           memory=memory, message_id=message_id)
+        finally:
+            MODEL_DEADLINE.reset(token)
+
+    async def _consult(self, *, text, history, search, memory=None, message_id=None):
         all_messages = indexed_messages(history, text, message_id)
         memory = merge_memory(memory, [], all_messages)
         memory = select_active_object(memory, all_messages)
         memory = refresh_contact_permission(memory, all_messages)
+        memory = refresh_contact_phone(memory, all_messages)
         messages = bounded_history(history, text)
         if messages is None and memory["facts"] and len(text) <= 12000:
             # Keep stable IDs, the latest turns and durable facts instead of resetting memory.
@@ -740,12 +778,14 @@ class EnergyConsultant:
                             and f.get("value") != old_values.get((f["scope"], f["field"]))
                             for f in next_memory["facts"]
                         )
-                        explicit = re.search(r"исправ|измен|обнов|дополн|новую заявку", text, re.I)
+                        explicit = re.search(r"исправ|измен|замен|ошиб|обнов|дополн|новую заявку", text, re.I)
                         if not changed and not explicit:
                             raise ValueError("Lead is already saved: use action=none without a new correction or task")
                     check_lead_against_memory(lead, next_memory)
                     contact_intent(data.get("lead_intent_quote"), all_messages)
-                    summary = manager_summary(next_memory, selected_summary(data.get("lead_facts"), all_messages))
+                    summary = manager_summary(next_memory, None)
+                    if summary is None:
+                        summary = selected_summary(data.get("lead_facts"), all_messages)
                 if data.get("state") not in {"chatting", "awaiting_contacts"}:
                     raise ValueError("Invalid state")
                 data["verified_memory"] = next_memory

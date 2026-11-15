@@ -11,7 +11,7 @@ from pathlib import Path
 
 from app.consultant import ModelRateLimited
 from consultant_impl import EnergyConsultant, GroundingReviewer, ModelConfig
-from dialog_memory import empty_memory
+from dialog_memory import active_scope, empty_memory
 from evaluate_answers import EvaluationClient, EvaluationSearch, Config, KnowledgeSearch, save
 
 SCENARIOS = {
@@ -33,7 +33,42 @@ SCENARIOS = {
 }
 
 
-def run(report, output, consultant, client, search):
+def check_turn(name, index, reply):
+    """Check business outcomes, not just whether the model returned some text."""
+    memory = reply.dialog_memory or empty_memory()
+    facts = {(f['scope'], f['field']): f for f in memory['facts']}
+    def value(scope, field):
+        fact = next((f for (s,k),f in facts.items() if s.casefold()==scope.casefold() and k==field), {})
+        return fact.get('value') if fact.get('status') == 'provided' else None
+    if name == 'contacts_and_correction':
+        if index in {0, 2}:
+            assert value(active_scope(memory), 'meter_count') == ('40' if index == 0 else '45'), 'meter_count_not_saved'
+        if index == 3:
+            assert facts.get(('client','contact_permission'), {}).get('status') == 'declined', 'refusal_not_saved'
+            assert reply.lead is None and reply.requested_action == 'none', 'lead_created_after_refusal'
+        if index in {4, 5}:
+            assert reply.requested_action == 'create_lead' and reply.lead, 'lead_action_missing'
+            phone = '+79990000000' if index == 4 else '+79991111111'
+            assert reply.lead == {'full_name':'Тест Тестов','company':'Альфа','phone':phone}, 'lead_contacts_incorrect'
+            assert value('client','phone') == phone, 'phone_memory_not_updated'
+            assert reply.lead_summary and '45' in reply.lead_summary, 'lead_summary_missing_current_count'
+        if index == 6:
+            assert reply.lead is None, 'lead_leaked_into_new_session'
+            assert not any(f['field'] in {'phone','full_name','company'} for f in memory['facts']), 'contacts_leaked_into_new_session'
+            assert not any(x in reply.text for x in ('Тест Тестов','+79990000000','+79991111111','Альфа')), 'old_contacts_in_new_answer'
+    if name == 'separate_objects':
+        if index in {0, 1, 2}:
+            expected = 'Второй склад' if index == 1 else 'Первый склад'
+            assert active_scope(memory).casefold() == expected.casefold(), 'wrong_active_object'
+            assert '800' in str(value('Первый склад','connected_power')), 'first_power_lost'
+        if index in {1, 2}:
+            assert '300' in str(value('Второй склад','connected_power')), 'second_power_lost'
+        if index == 3:
+            assert not any(f['field'] == 'connected_power' for f in memory['facts']), 'power_leaked_into_new_session'
+            assert not any(x in reply.text for x in ('800','300')), 'old_power_in_new_answer'
+
+
+def run(report, output, consultant, client, search, *, checks=True):
     failed = False
     for name, turns in SCENARIOS.items():
         scenario = report.setdefault('scenarios', {}).setdefault(name, {'turns': [], 'history': [], 'memory': empty_memory()})
@@ -53,6 +88,8 @@ def run(report, output, consultant, client, search):
                 mid = f'{name}:user:{index}'
                 reply = asyncio.run(consultant(text=text, history=scenario['history'], search=search,
                                               memory=before, message_id=mid))
+                if checks:
+                    check_turn(name, index, reply)
                 scenario['memory'] = reply.dialog_memory or before
                 # Explicitly simulated action receipt; actual SQL is tested by backend pytest.
                 if reply.requested_action == 'create_lead':
@@ -62,6 +99,7 @@ def run(report, output, consultant, client, search):
                     {'role': 'assistant', 'content': reply.text, 'message_id': f'{name}:assistant:{index}'},
                 ])
                 row.update(status='answered', answer=reply.text, memory_after=scenario['memory'],
+                           business_checks='passed' if checks else 'not_run',
                            action=reply.requested_action, memory_warnings=reply.memory_warnings, lead=reply.lead, summary=reply.lead_summary,
                            sources=[s.model_dump() for s in reply.sources])
             except ModelRateLimited as exc:
@@ -69,6 +107,7 @@ def run(report, output, consultant, client, search):
                 report.update(status='rate_limited', retry_at=time.time()+exc.retry_after)
             except Exception as exc:
                 row.update(status='failed', error_type=type(exc).__name__)
+                if isinstance(exc,AssertionError):row['check']=str(exc)
                 report['status'] = 'stopped_after_error'
             row.update(model_calls=client.calls-start_calls, seconds=round(time.monotonic()-start, 3),
                        request_traces=client.traces[start_traces:], retrieved=search.last_result)
