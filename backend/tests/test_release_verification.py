@@ -28,6 +28,30 @@ from verify_submission import audit_archive, validate_csv
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_lead_action_without_complete_verified_contacts_is_rejected(self):
+        class Client:
+            async def complete(self, messages):
+                return json.dumps(
+                    dict(
+                        answer="Готово.",
+                        kind="contacts",
+                        state="chatting",
+                        evidence_ids=[],
+                        lead=None,
+                        action="create_lead",
+                        follow_up_question=None,
+                    )
+                )
+
+        class Search:
+            async def search(self, *args, **kwargs):
+                return {"hits": []}
+
+        with self.assertRaises(ConsultantUnavailable):
+            asyncio.run(
+                EnergyConsultant(Client())(text="Оформите заявку.", history=[], search=Search())
+            )
+
     def test_evening_only_input_does_not_justify_definite_efficiency_verdict(self):
         from consultant_impl import validate_project_claims
 
@@ -340,6 +364,9 @@ class ReleaseTests(unittest.TestCase):
         reply = asyncio.run(EnergyConsultant(Client())(text=text, history=[], search=Search()))
         self.assertEqual(reply.requested_action, "create_lead")
         self.assertIn(text, reply.lead_summary)
+        self.assertTrue(
+            {"full_name", "phone", "company"} <= {f["field"] for f in reply.dialog_memory["facts"]}
+        )
 
     def test_explicit_request_not_to_create_lead_overrides_previous_intent(self):
         from consultant_impl import contact_intent
@@ -415,6 +442,8 @@ class ReleaseTests(unittest.TestCase):
                     )
                     if index == 4:
                         updates = [fact("full_name", "Тест Тестов", "Тест Тестов")]
+                    else:
+                        lead = None  # A tool proposal may omit unchanged contacts on correction.
                 return json.dumps(
                     dict(
                         answer="Данные приняты." if index != 6 else "В новой беседе контактов нет.",
@@ -423,7 +452,7 @@ class ReleaseTests(unittest.TestCase):
                         evidence_ids=[],
                         follow_up_question=None,
                         lead=lead,
-                        action="create_lead" if lead else "none",
+                        action="create_lead" if index == 4 else "none",
                         memory_updates=updates,
                         lead_intent_quote="оформите заявку",
                     )

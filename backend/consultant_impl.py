@@ -20,7 +20,7 @@ except ModuleNotFoundError:
 
 
 from dialog_memory import (
-    active_scope, check_lead_against_memory, indexed_messages, known_fields, merge_memory, remember_question, question_field, question_slot, manager_summary, verified_memory_updates, select_active_object, contact_permission, refresh_contact_permission, refresh_contact_phone,
+    active_scope, check_lead_against_memory, indexed_messages, known_fields, merge_memory, remember_question, question_slot, manager_summary, verified_memory_updates, select_active_object, contact_permission, refresh_contact_permission, refresh_contact_phone, remember_lead_contacts,
 )
 
 
@@ -742,6 +742,9 @@ class EnergyConsultant:
     async def _consult(self, *, text, history, search, memory=None, message_id=None):
         all_messages = indexed_messages(history, text, message_id)
         memory = merge_memory(memory, [], all_messages)
+        prior_phone=next((f['value'] for f in memory['facts']
+                          if f['field']=='phone' and f['scope']=='client' and f['status']=='provided'),None)
+        saved_lead=(memory.get('lead') or {}).get('status')=='saved'
         memory = select_active_object(memory, all_messages)
         memory = refresh_contact_permission(memory, all_messages)
         memory = refresh_contact_phone(memory, all_messages)
@@ -834,6 +837,28 @@ class EnergyConsultant:
                 }:
                     raise ValueError("Invalid answer kind")
                 next_memory, memory_warnings = verified_memory_updates(memory, data.get("memory_updates", []), all_messages)
+                corrected_phone=next((f['value'] for f in next_memory['facts']
+                    if f['field']=='phone' and f['status']=='provided'
+                    and f['source_message_id']==messages[-1]['message_id']),None)
+                if (saved_lead and corrected_phone and corrected_phone!=prior_phone
+                        and re.search(r'телефон|номер',text,re.I)
+                        and re.search(r'исправ|замен|ошиб|обнов|измен',text,re.I)
+                        and data.get('action') in {None,'none','create_lead'}):
+                    data['action']='create_lead'
+                    data['lead']=None
+                if data.get('action')=='create_lead' and data.get('lead') is None:
+                    contacts={f['field']:f['value'] for f in next_memory['facts']
+                              if f['scope']=='client' and f['status']=='provided'
+                              and f['field'] in {'full_name','phone','company'}}
+                    if len(contacts)==3:
+                        data['lead']=contacts
+                        data['kind']='contacts'
+                        data['state']='chatting'
+                        data['answer']='Данные для заявки готовы.'
+                        data['follow_up_question']=None
+                        if not data.get('lead_intent_quote'):
+                            data['lead_intent_quote']=next((f['quote'] for f in next_memory['facts']
+                                if f['field']=='contact_permission' and f['status']=='provided'),text)
                 if any(f['field']=='contact_permission' and f['status']=='declined' for f in next_memory['facts']):
                     data['state']='chatting'
                 current_plan = plan
@@ -893,6 +918,7 @@ class EnergyConsultant:
                             raise ValueError("Lead is already saved: use action=none without a new correction or task")
                     check_lead_against_memory(lead, next_memory)
                     contact_intent(data.get("lead_intent_quote"), all_messages)
+                    next_memory=remember_lead_contacts(next_memory,lead,all_messages)
                     summary = manager_summary(next_memory, None)
                     if summary is None:
                         summary = (user_summary(all_messages) if data.get('lead_facts') is None

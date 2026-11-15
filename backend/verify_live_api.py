@@ -14,6 +14,66 @@ from evaluate_answers import EvaluationClient, save
 from evaluate_dialogs import SCENARIOS, check_turn
 
 
+async def verify_contact_form(client, model):
+    """A submitted form supersedes an earlier refusal and remains editable in chat."""
+    result = {"status": "running"}
+    try:
+        created = await client.post("/api/sessions")
+        created.raise_for_status()
+        path = "/api/sessions/" + created.json()["id"]
+        response = await client.post(
+            path + "/messages",
+            json={
+                "text": "Нужен учёт на складах. Телефон пока не готов оставлять.",
+                "client_message_id": str(uuid4()),
+            },
+        )
+        response.raise_for_status()
+        detail = (await client.get(path)).json()
+        assert any(
+            f["field"] == "contact_permission" and f["status"] == "declined"
+            for f in detail["dialog_memory"]["facts"]
+        ), "form_initial_refusal_missing"
+        contacts = {"full_name": "Тест Формов", "phone": "+79993333333", "company": "ФормаТест"}
+        form = await client.post(path + "/lead", json=contacts)
+        form.raise_for_status()
+        result["created_lead"] = form.json()
+        detail = (await client.get(path)).json()
+        assert any(
+            f["field"] == "contact_permission" and f["status"] == "provided"
+            for f in detail["dialog_memory"]["facts"]
+        ), "form_did_not_supersede_refusal"
+        before = len(detail["messages"])
+        calls = model.calls
+        retry = await client.post(path + "/lead", json=contacts)
+        assert retry.status_code == 200 and retry.json()["id"] == form.json()["id"], (
+            "form_retry_not_idempotent"
+        )
+        assert model.calls == calls, "form_retry_called_model"
+        assert len((await client.get(path)).json()["messages"]) == before, (
+            "form_retry_duplicated_event"
+        )
+        updated = await client.post(
+            path + "/messages",
+            json={
+                "text": "В заявке ошибочный телефон. Замените на +79994444444.",
+                "client_message_id": str(uuid4()),
+            },
+        )
+        updated.raise_for_status()
+        lead = (await client.get(path + "/lead")).json()
+        result["corrected_lead"] = lead
+        assert lead["id"] == form.json()["id"] and lead["phone"] == "+79994444444", (
+            "form_phone_correction_not_saved"
+        )
+        result["status"] = "passed"
+    except Exception as exc:
+        result.update(status="failed", error_type=type(exc).__name__)
+        if isinstance(exc, AssertionError):
+            result["check"] = str(exc)
+    return result
+
+
 async def verify(kb, db, output, interval=0, turn_interval=45):
     import httpx
     import psycopg
@@ -172,9 +232,16 @@ async def verify(kb, db, output, interval=0, turn_interval=45):
                                 print(f"{name}/{index + 1}: {row['status']}", flush=True)
                             if row["status"] != "passed":
                                 break
+                    await asyncio.sleep(60)
+                    start = len(model.traces)
+                    report["form_flow"] = await verify_contact_form(client, model)
+                    report["form_flow"]["request_traces"] = model.traces[start:]
+                    save(output, report)
+                    print("form_flow: " + report["form_flow"]["status"], flush=True)
             report["status"] = (
                 "complete"
-                if all(
+                if report.get("form_flow", {}).get("status") == "passed"
+                and all(
                     len(report["scenarios"].get(n, [])) == len(t)
                     and all(r["status"] == "passed" for r in report["scenarios"][n])
                     for n, t in SCENARIOS.items()

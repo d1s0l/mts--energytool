@@ -20,12 +20,17 @@ async def create_lead(conn, *, session_id, contacts, summary):
     return (await cursor.fetchone())['id']
 
 
+def contact_form_message(contacts):
+    contacts=LeadIn.model_validate(contacts)
+    return f'Оформите заявку по данным формы.\nФИО: {contacts.full_name}\nТелефон: {contacts.phone}\nКомпания: {contacts.company}'
+
+
 async def record_contact_memory(conn, *, session_id, contacts):
     """A form submission is a user event, so contact corrections have durable provenance."""
     from dialog_memory import merge_memory
     from psycopg.types.json import Jsonb
     contacts = LeadIn.model_validate(contacts)
-    content = f'ФИО: {contacts.full_name}\nТелефон: {contacts.phone}\nКомпания: {contacts.company}'
+    content = contact_form_message(contacts)
     cursor = await conn.execute(
         "INSERT INTO messages(session_id, role, text) VALUES (%s, 'user', %s) RETURNING id",
         (session_id, content))
@@ -38,6 +43,8 @@ async def record_contact_memory(conn, *, session_id, contacts):
     messages = await cursor.fetchall()
     updates = [dict(field=key, scope='client', status='provided', value=value,
                     source_message_id=source, quote=value) for key,value in contacts.model_dump().items()]
+    updates.append(dict(field='contact_permission',scope='client',status='provided',
+        value='Оформите заявку по данным формы.',quote='Оформите заявку по данным формы.',source_message_id=source))
     memory = merge_memory(previous, updates, messages)
     cursor = await conn.execute('SELECT id FROM leads WHERE session_id = %s ORDER BY created_at DESC LIMIT 1',
                                 (session_id,))

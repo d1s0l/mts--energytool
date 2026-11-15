@@ -9,7 +9,8 @@ from psycopg.errors import LockNotAvailable
 from app.access import require_access
 from app.consultant import ConsultantUnavailable
 from app.schemas import LeadIn, LeadOut
-from app.lead_actions import create_lead as persist_lead, record_contact_memory
+from dialog_memory import manager_summary
+from app.lead_actions import create_lead as persist_lead, record_contact_memory, contact_form_message
 
 router = APIRouter(prefix="/api/sessions", tags=["leads"], dependencies=[Depends(require_access)])
 
@@ -42,7 +43,7 @@ async def create_lead(session_id: UUID, body: LeadIn, request: Request, response
     async with pool.connection() as conn:
         try:
             cursor = await conn.execute(
-                "SELECT id, (processing_token IS NOT NULL AND processing_started_at > "
+                "SELECT id, dialog_memory, (processing_token IS NOT NULL AND processing_started_at > "
                 "clock_timestamp() - interval '180 seconds') AS busy FROM sessions "
                 "WHERE id = %s AND deleted_at IS NULL FOR UPDATE NOWAIT",
                 (session_id,),
@@ -87,8 +88,10 @@ async def create_lead(session_id: UUID, body: LeadIn, request: Request, response
         history = await cursor.fetchall()
         if not any(message["role"] == "user" for message in history):
             raise HTTPException(status_code=422, detail="empty_dialog")
+        history.append({'role':'user','content':contact_form_message(body)})
         summarizer = request.app.state.lead_summarizer
-        if summarizer is None:
+        summary=manager_summary(session['dialog_memory'],None)
+        if summarizer is None and summary is None:
             raise HTTPException(status_code=503, detail="consultant_unavailable")
         cursor = await conn.execute(
             "UPDATE sessions SET processing_token = %s, processing_started_at = clock_timestamp() "
@@ -99,8 +102,9 @@ async def create_lead(session_id: UUID, body: LeadIn, request: Request, response
         if await cursor.fetchone() is None:
             raise HTTPException(409, "session_busy")
     try:
-        async with asyncio.timeout(60):
-            summary = await summarizer(history=history)
+        if summary is None:
+            async with asyncio.timeout(60):
+                summary = await summarizer(history=history)
         if (
             not isinstance(summary, str)
             or not summary.strip()

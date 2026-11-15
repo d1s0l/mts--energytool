@@ -105,6 +105,27 @@ def refresh_contact_phone(memory, messages):
         quote=quote, source_message_id=current['message_id'])], messages)
 
 
+def remember_lead_contacts(memory, contacts, messages):
+    """Durably store already validated contacts even if optional model deltas omitted them."""
+    known={f['field'] for f in memory['facts'] if f['scope']=='client'}
+    updates=[]
+    for field,value in contacts.items():
+        if field in known:continue
+        for message in reversed(messages):
+            if message['role']!='user':continue
+            if field=='phone':
+                quote=next((p for p in re.findall(r'\+?\d[\d ()-]{8,30}\d',message['content'])
+                            if re.sub(r'[ ()-]','',p)==value),None)
+            else:
+                match=re.search(re.escape(value),message['content'],re.I)
+                quote=match.group() if match else None
+            if quote:
+                updates.append(dict(field=field,scope='client',status='provided',value=value,
+                    quote=quote,source_message_id=message['message_id']))
+                break
+    return merge_memory(memory,updates,messages)
+
+
 def merge_memory(previous, updates, messages):
     """Only quoted user statements can change facts; older turns cannot undo corrections."""
     memory = copy.deepcopy(previous or empty_memory())
