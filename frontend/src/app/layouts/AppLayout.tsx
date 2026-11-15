@@ -12,7 +12,7 @@ import {
   type StoredSession,
 } from '@/entities/session/model/sessionStorage';
 import { Header } from '@/widgets/header/Header';
-import { Sidebar } from '@/widgets/sidebar';
+import { DebugSidebar, Sidebar } from '@/widgets/sidebar';
 
 import styles from './AppLayout.module.scss';
 
@@ -98,7 +98,18 @@ export function AppLayout() {
       <Header />
 
       <div className={`${styles.content} ${isDebugRoute ? styles.debugContent : ''}`}>
-        <Sidebar
+        {isDebugRoute ? (
+          <DebugSidebar
+            sessions={sessions}
+            activeSessionId={activeSessionId}
+            width={sidebarWidth}
+            isResizing={isResizing}
+            onResizePointerDown={handleResizePointerDown}
+            onSelectSession={setActiveSessionId}
+            onDeleteSession={handleSessionDeleted}
+          />
+        ) : (
+          <Sidebar
           sessions={sessions}
           activeSessionId={activeSessionId}
           width={sidebarWidth}
@@ -107,8 +118,8 @@ export function AppLayout() {
           onSelectSession={setActiveSessionId}
           onCreateSession={handleSessionCreated}
           onDeleteSession={handleSessionDeleted}
-          isDebugRoute={isDebugRoute}
-        />
+          />
+        )}
 
         <main className={styles.main}>
           <Outlet
