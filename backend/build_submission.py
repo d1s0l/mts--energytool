@@ -13,6 +13,7 @@ def build_submission(
         "solution.py": backend / "solution.py",
         "consultant.py": backend / "app/consultant.py",
         "rag_search.py": backend.parent / "rag/rag_search.py",
+        "dialog_memory.py": backend / "dialog_memory.py",
         "requirements.txt": backend / "requirements-submission.txt",
     }
     if consultant is not None:

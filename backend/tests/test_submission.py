@@ -27,7 +27,7 @@ def test_dialog_separates_last_question_from_history(separator):
     assert split_dialog("Обычный вопрос") == ("Обычный вопрос", [])
 
 
-def test_parallel_answers_preserve_ids_csv_and_isolation(tmp_path):
+def test_parallel_answers_preserve_ids_csv_and_isolation(tmp_path, capsys):
     (tmp_path / "kb.md").write_text("# Учёт\nУчёт по складам.\n", encoding="utf-8")
     engine = KnowledgeSearch(tmp_path, Config(mode="local"))
     questions = [("2", "Первый"), ("1", "Пользователь: Склады\nПользователь: Учёт")]
@@ -42,12 +42,20 @@ def test_parallel_answers_preserve_ids_csv_and_isolation(tmp_path):
         return ConsultantReply(text=f'{text}, "ответ"\nвторая строка')
 
     answers = asyncio.run(answer_questions(questions, engine, consultant, 2))
+    import json
+
+    events = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    assert {event["question_id"] for event in events} == {"1", "2"}
+    assert all(event["event"] == "question_completed" for event in events)
+    assert all(event["elapsed_ms"] >= 0 for event in events)
     output = tmp_path / "submission.csv"
     write_submission(output, questions, answers)
     with output.open(newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream))
     assert [row["id"] for row in rows] == ["2", "1"]
-    assert [row["answer"] for row in rows] == answers
+    assert [row["answer"] for row in rows] == [" ".join(answer.split()) for answer in answers]
+    assert len(output.read_text().splitlines()) == len(questions) + 1
+    assert output.read_text().startswith('"id","answer"\n')
 
     async def too_long(**kwargs):
         return ConsultantReply(text="x" * 10001)
@@ -77,6 +85,7 @@ def test_archive_runs_without_web_backend_and_fails_explicitly_without_model(tmp
             "consultant.py",
             "consultant_impl.py",
             "rag_search.py",
+            "dialog_memory.py",
             "requirements.txt",
         }
         zipped.extractall(tmp_path / "standalone")
@@ -150,6 +159,7 @@ def test_final_save_retries_and_keeps_successful_answers(tmp_path, monkeypatch):
 
     (tmp_path / "questions.csv").write_text("id,question\n1,Учёт\n", encoding="utf-8")
     monkeypatch.setattr(solution, "KnowledgeSearch", lambda *args: None)
+    (tmp_path / "kb.zip").touch()
     original = solution.write_submission
     saves = []
 
@@ -175,6 +185,7 @@ def test_persistent_save_failure_is_reported_and_keeps_previous_csv(tmp_path, mo
 
     (tmp_path / "questions.csv").write_text("id,question\n1,Учёт\n", encoding="utf-8")
     monkeypatch.setattr(solution, "KnowledgeSearch", lambda *args: None)
+    (tmp_path / "kb.zip").touch()
     original = solution.write_submission
     calls = 0
 
@@ -219,8 +230,8 @@ def test_packaged_entry_point_reads_data_and_writes_csv(tmp_path):
         zipped.extractall(standalone)
     data = standalone / "data"
     data.mkdir()
-    (data / "questions.csv").write_text("id,question\n42,Учёт складов\n", encoding="utf-8")
-    with ZipFile(data / "knowledge-base.zip", "w") as zipped:
+    (data / "train.csv").write_text("id,question\n42,Учёт складов\n", encoding="utf-8")
+    with ZipFile(data / "knowledge_base.zip", "w") as zipped:
         zipped.writestr("meter.md", "# Учёт\nУчёт потребления по складам.")
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)

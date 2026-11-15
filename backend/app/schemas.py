@@ -39,6 +39,7 @@ class MessageOut(BaseModel):
 
 
 class SessionDetailOut(SessionOut):
+    dialog_memory: dict | None = None
     messages: list[MessageOut]
 
 

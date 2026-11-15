@@ -1,0 +1,17 @@
+# Dedicated disposable PostgreSQL for diagnostics; independent of the app's database.
+services:
+  postgres:
+    image: postgres:17.5-alpine
+    environment:
+      POSTGRES_USER: energytool_test
+      POSTGRES_PASSWORD: energytool-test
+      POSTGRES_DB: energytool_test
+    ports:
+      - "127.0.0.1:${TEST_POSTGRES_PORT:-55432}:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U energytool_test -d energytool_test"]
+      interval: 1s
+      timeout: 2s
+      retries: 30

@@ -92,3 +92,29 @@
     cursor: not-allowed;
   }
 }
+
+.deleteButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 7px;
+  color: var(--mts-ink-muted);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition:
+    color 0.18s ease,
+    background-color 0.18s ease;
+
+  &:hover {
+    color: var(--mts-red);
+    background: var(--mts-red-soft);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}

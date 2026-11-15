@@ -13,14 +13,14 @@ Frontend, FastAPI, PostgreSQL и командный модуль RAG. Досту
 docker compose up --build
 ```
 
-- Frontend: http://localhost:8080
+- Frontend: http://localhost:3000
 - Swagger: http://localhost:8000/docs
 - OpenAPI: http://localhost:8000/openapi.json
 
 PostgreSQL хранит данные в volume `pgdata`. При старте backend открывает пул
 подключений к БД и применяет SQL-миграции. При старте также один раз строится RAG-индекс.
 Если база знаний отсутствует или не читается, запуск завершается ошибкой.
-Frontend пока не вызывает API сессий.
+Frontend вызывает API сессий через `/api`. Для локального показа используйте `compose.demo.yaml` (см. `DEMO_START.md`).
 
 Для изменения локального пароля скопируйте `.env.example` в `.env` в корне.
 Пароль по умолчанию предназначен для локальной разработки. При смене пароля
@@ -279,3 +279,6 @@ LLM_TIMEOUT=45, MAX_TOKENS=4096, LLM_REASONING_EFFORT=low.
 если старый клиент повторяет запрос без client_message_id. Для точной
 идемпотентности frontend должен сохранять UUID client_message_id между повторами.
 Неудачные попытки остаются в истории со статусом failed для проверки.
+
+Структурированная память диалога, миграция 004 и серверное действие заявки:
+[документация памяти](docs/dialog-memory.md).

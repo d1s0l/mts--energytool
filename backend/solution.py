@@ -14,11 +14,23 @@ from contextlib import contextmanager
 from pathlib import Path
 
 try:
-    from consultant import Consultant, ConsultantReply, ConsultantUnavailable, HistoryMessage
+    from consultant import (
+        Consultant,
+        ConsultantReply,
+        ConsultantUnavailable,
+        HistoryMessage,
+        ModelRateLimited,
+    )
 except ModuleNotFoundError as exc:
     if exc.name != "consultant":
         raise
-    from app.consultant import Consultant, ConsultantReply, ConsultantUnavailable, HistoryMessage
+    from app.consultant import (
+        Consultant,
+        ConsultantReply,
+        ConsultantUnavailable,
+        HistoryMessage,
+        ModelRateLimited,
+    )
 
 try:
     from rag_search import Config, KnowledgeSearch
@@ -63,6 +75,26 @@ def stage(name):
     except Exception as exc:
         diagnose(name, exc, elapsed_ms=round((time.monotonic() - started) * 1000, 3))
         raise
+    else:
+        print(
+            json.dumps(
+                {
+                    "event": "stage_completed",
+                    "stage": name,
+                    "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+                }
+            ),
+            file=sys.stderr,
+        )
+
+
+def find_file(data_dir: Path, *names: str) -> Path:
+    for root in (data_dir, Path(__file__).resolve().parent / data_dir, Path.cwd()):
+        for name in names:
+            path = root / name
+            if path.is_file():
+                return path
+    raise FileNotFoundError("Platform input file not found: " + ", ".join(names))
 
 
 def read_questions(path: Path) -> list[tuple[str, str]]:
@@ -129,10 +161,29 @@ async def answer_questions(
     )
     answers = [fallback] * len(questions)
     search = SubmissionSearch(engine)
+    rate_limit_retries = {}
+    adaptive_interval = float(os.getenv("SUBMISSION_MIN_INTERVAL", "0"))
+    if not 0 <= adaptive_interval <= 60:
+        raise ValueError("SUBMISSION_MIN_INTERVAL must be between 0 and 60")
+    next_turn_at = 0.0
+    dispatch_lock = asyncio.Lock()
+
+    async def reserve_turn():
+        nonlocal next_turn_at
+        async with dispatch_lock:
+            while next_turn_at > time.monotonic():
+                if deadline is not None and next_turn_at >= deadline:
+                    return False
+                await asyncio.sleep(next_turn_at - time.monotonic())
+            next_turn_at = time.monotonic() + adaptive_interval
+            return True
 
     async def worker():
+        nonlocal adaptive_interval, next_turn_at
         while pending:
             index, (qid, question) = pending.popleft()
+            if not await reserve_turn():
+                return
             started = time.monotonic()
             current_stage = "parse_dialog"
             remaining = 60 if deadline is None else min(60, deadline - time.monotonic())
@@ -167,6 +218,34 @@ async def answer_questions(
                 if len(reply.text) > 10000:
                     raise ValueError("An answer exceeds the platform limit of 10000 characters")
                 answers[index] = reply.text
+                print(
+                    json.dumps(
+                        {
+                            "event": "question_completed",
+                            "question_id": qid,
+                            "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+                            "search_ms": reply.search_ms,
+                            "generation_ms": reply.generation_ms,
+                        }
+                    ),
+                    file=sys.stderr,
+                )
+            except ModelRateLimited as exc:
+                retries = rate_limit_retries.get(index, 0)
+                delay = max(60, exc.retry_after)
+                adaptive_interval = max(45, adaptive_interval)
+                next_turn_at = max(next_turn_at, time.monotonic() + delay)
+                can_retry = retries < 2 and (
+                    deadline is None or deadline - time.monotonic() > delay + 55
+                )
+                if can_retry:
+                    rate_limit_retries[index] = retries + 1
+                    print(
+                        f"Question {index + 1} rate limited; waiting before retry", file=sys.stderr
+                    )
+                    pending.appendleft((index, questions[index]))
+                else:
+                    print(f"Question {index + 1} failed (ModelRateLimited)", file=sys.stderr)
             except Exception as exc:
                 diagnose(
                     current_stage,
@@ -199,10 +278,11 @@ def write_submission(path: Path, questions: list[tuple[str, str]], answers: list
             mode="w", encoding="utf-8", newline="", dir=path.parent, delete=False
         ) as stream:
             temporary = Path(stream.name)
-            writer = csv.writer(stream)
+            writer = csv.writer(stream, quoting=csv.QUOTE_ALL, lineterminator="\n")
             writer.writerow(["id", "answer"])
             writer.writerows(
-                (qid, answer) for (qid, _), answer in zip(questions, answers, strict=True)
+                (qid, " ".join(answer.split()))
+                for (qid, _), answer in zip(questions, answers, strict=True)
             )
         temporary.replace(path)
     finally:
@@ -231,28 +311,31 @@ async def run(
     if not 1 <= max_workers <= 8:
         raise ValueError("MAX_WORKERS must be between 1 and 8")
     with stage("read_questions"):
-        questions = read_questions(data_dir / "questions.csv")
+        questions = read_questions(find_file(data_dir, "questions.csv", "train.csv"))
     fallback = ["Временный технический сбой. Повторите вопрос." for _ in questions]
     with stage("initial_save"):
         write_submission(output, questions, fallback)
     with stage("configure_deadline"):
-        budget = min(1150, max(1, float(os.getenv("SUBMISSION_TIMEOUT", "1100"))))
+        budget = min(1120, max(1, float(os.getenv("SUBMISSION_TIMEOUT", "1100"))))
     deadline = time.monotonic() + budget
     if consultant is None:
         with stage("load_consultant"):
             consultant = load_consultant()
     with stage("initialize_rag"):
         engine = await asyncio.to_thread(
-            KnowledgeSearch, data_dir / "knowledge-base.zip", Config.from_env()
+            KnowledgeSearch,
+            find_file(data_dir, "knowledge-base.zip", "knowledge_base.zip", "kb.zip"),
+            Config.from_env(),
         )
-    answers = await answer_questions(
-        questions,
-        engine,
-        consultant,
-        max_workers,
-        deadline=deadline,
-        checkpoint=lambda completed: write_submission(output, questions, completed),
-    )
+    with stage("answer_questions"):
+        answers = await answer_questions(
+            questions,
+            engine,
+            consultant,
+            max_workers,
+            deadline=deadline,
+            checkpoint=lambda completed: write_submission(output, questions, completed),
+        )
     with stage("final_save"):
         for attempt in range(3):
             try:
@@ -270,7 +353,11 @@ def main() -> int:
         asyncio.run(
             run(
                 None,
-                Path(os.getenv("DATA_DIR", "data")),
+                Path(
+                    (os.getenv("DATA_DIR", "").strip() or "data")
+                    if os.getenv("DATA_DIR") != "DATA_DIR"
+                    else "data"
+                ),
                 Path("submission.csv"),
                 int(os.getenv("MAX_WORKERS", "3")),
             )

@@ -30,10 +30,19 @@ class ConsultantReply(BaseModel):
     sources: list[DebugSource] = Field(default_factory=list)
     lead: dict[str, str] | None = None
     lead_summary: str | None = None
+    dialog_memory: dict | None = None
+    memory_warnings: list[str] = Field(default_factory=list)
+    requested_action: Literal["none", "create_lead"] = "none"
 
 
 class ConsultantUnavailable(Exception):
     """Модель или поиск временно недоступны."""
+
+
+class ModelRateLimited(ConsultantUnavailable):
+    def __init__(self, retry_after: float = 60):
+        self.retry_after = max(1, min(3600, retry_after))
+        super().__init__("Model rate limit")
 
 
 class Consultant(Protocol):
