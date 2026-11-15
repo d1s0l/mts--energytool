@@ -32,8 +32,8 @@ def test_session_capability_and_idempotent_retry(tmp_path, monkeypatch):
             async def consultant(*, text, history, search):
                 calls.append(text)
                 if text.startswith("Сбой") and calls.count(text) == 1:
-                    raise ConsultantUnavailable()
-                return ConsultantReply(text="Проверенный ответ")
+                    raise ConsultantUnavailable(debug={"raw_response": "broken", "validation_errors": ["JSONDecodeError"]})
+                return ConsultantReply(text="Проверенный ответ", raw_response='{"answer":"Проверенный ответ"}', parsed_response={"answer":"Проверенный ответ"})
 
             settings = Settings(
                 database_url=make_conninfo(
@@ -78,13 +78,14 @@ def test_session_capability_and_idempotent_retry(tmp_path, monkeypatch):
                 assert calls == ["Вопрос"]
                 debug_response = client.get(path + "/debug", headers=own)
                 assert debug_response.status_code == 200
-                assert debug_response.json()["items"] == [
-                    {
-                        "message_id": initial.json()["assistant_message"]["id"],
-                        "created_at": initial.json()["assistant_message"]["created_at"],
-                        "debug": initial.json()["assistant_message"]["debug"],
-                    }
-                ]
+                item = debug_response.json()["items"][0]
+                assert item["role"] == "assistant"
+                assert item["message_id"] == initial.json()["assistant_message"]["id"]
+                assert item["debug"]["raw_response"] == '{"answer":"Проверенный ответ"}'
+                assert item["debug"]["parsed_response"] == {"answer":"Проверенный ответ"}
+                assert item["debug"]["final_response"] == "Проверенный ответ"
+                assert "raw_response" not in initial.json()["assistant_message"]["debug"]
+                assert "parsed_response" not in client.get(path, headers=own).json()["messages"][-1]["debug"]
                 assert calls == ["Вопрос"]
                 assert (
                     client.post(
@@ -97,6 +98,11 @@ def test_session_capability_and_idempotent_retry(tmp_path, monkeypatch):
                 history = client.get(path, headers=own).json()["messages"]
                 assert history[-1]["text"] == "Сбой"
                 assert history[-1]["status"] == "failed"
+                assert history[-1]["debug"] is None
+                failed_debug = client.get(path + "/debug", headers=own).json()["items"][-1]
+                assert failed_debug["role"] == "user"
+                assert failed_debug["debug"]["raw_response"] == "broken"
+
                 assert client.post(path + "/messages", json=failed, headers=own).status_code == 200
                 history = client.get(path, headers=own).json()["messages"]
                 assert len(history) == 4
