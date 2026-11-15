@@ -113,7 +113,7 @@ POLICY = """Ты консультант МТС EnergyTool. Отвечай по-�
 все три поля известны и нет текущего отказа. Не обещай время звонка или фактическую отправку.
 До подтверждения приложения говори лишь, что данные готовы для заявки.
 
-Верни только JSON: {"answer":"текст", "state":"chatting или awaiting_contacts",
+Верни только JSON: {"state":"chatting или awaiting_contacts",
 "evidence_ids":["ID реально использованного фрагмента"],
 "lead":null или {"full_name":"...","phone":"...","company":"..."}}.
 Дополнительные поля: kind — product, clarify, contacts, greeting или unavailable;
@@ -151,9 +151,17 @@ value=null, для остальных value — часть quote; не прео�
 """
 
 
-SUPPORT_POLICY = """Для kind=product добавь answer_support: список объектов
+SUPPORT_POLICY = """ОБЯЗАТЕЛЬНЫЙ ФОРМАТ ПРОДУКТОВОГО ОТВЕТА:
+Для kind=product НЕ возвращай answer. Всегда добавь непустой answer_support: список объектов
 {"text":"предложение ответа", "evidence_id":"ID", "quote":"дословная цитата evidence"}.
-Все text по порядку должны составлять answer без пропусков; уточнение сюда не включай.
+Backend соберёт итоговый ответ из text по порядку, соединяя пробелами.
+Это единственный источник продуктового ответа. Сохрани все существенные условия.
+Уточнение сюда не включай; верни его отдельно в follow_up_question.
+Для остальных kind верни обычное поле answer.
+Пример product: {"kind":"product","state":"chatting","evidence_ids":["ID"],
+"answer_support":[{"text":"Утверждение.","evidence_id":"ID","quote":"Дословная цитата."}],
+"lead":null,"action":"none","memory_updates":[],"follow_up_question":null}.
+Используй только реальные ID и цитаты из evidence, пример выше — лишь схема.
 Каждый text должен непосредственно следовать из своей quote, включая все условия.
 Цитата должна подтверждать именно утверждение, а не просто относиться к той же теме.
 Не пиши неподтверждённое предложение: удали его, не подбирай к нему похожую цитату.
@@ -461,7 +469,7 @@ def numbers(text):
     return result
 
 def validate_answer_support(data, evidence, ids, messages):
-    """Check coverage and verbatim evidence; entailment still needs model evaluation."""
+    """Compose product answers from segments with verified citations and numbers."""
     if data.get("kind") != "product":
         return
     support = data.get("answer_support")
@@ -480,6 +488,7 @@ def validate_answer_support(data, evidence, ids, messages):
         if (
             not isinstance(text, str)
             or not text.strip()
+            or "\x00" in text
             or not isinstance(source, str)
             or source not in ids
             or not isinstance(quote, str)
@@ -493,8 +502,7 @@ def validate_answer_support(data, evidence, ids, messages):
         if not numbers(text).issubset(numbers(quote) | user_numbers):
             raise ValueError("answer_support number is absent from its evidence quote")
         parts.append(text)
-    if " ".join(" ".join(parts).split()) != " ".join(data["answer"].split()):
-        raise ValueError("answer_support must cover the entire answer in order")
+    return " ".join(" ".join(parts).split())
 
 
 
@@ -852,6 +860,13 @@ class EnergyConsultant:
                 data = json.loads(clean)
                 if not isinstance(data, dict):
                     raise ValueError("Expected object")
+                ids = data.get("evidence_ids", [])
+                if not isinstance(ids, list) or any(
+                    not isinstance(i, str) or i not in evidence for i in ids
+                ):
+                    raise ValueError("Unknown evidence")
+                if self.reviewer is None and data.get("kind") == "product":
+                    data["answer"] = validate_answer_support(data, evidence, ids, messages)
                 answer = data["answer"]
                 if (
                     not isinstance(answer, str)
@@ -860,11 +875,6 @@ class EnergyConsultant:
                     or "\x00" in answer
                 ):
                     raise ValueError("Invalid answer")
-                ids = data.get("evidence_ids", [])
-                if not isinstance(ids, list) or any(
-                    not isinstance(i, str) or i not in evidence for i in ids
-                ):
-                    raise ValueError("Unknown evidence")
                 if data.get("kind") not in {
                     "product",
                     "clarify",
@@ -1014,7 +1024,10 @@ class EnergyConsultant:
                             "content": (
                                 "Нарушен контракт: "
                                 + str(exc)[:300]
-                                + ". Проверь JSON, источники, дословные контакты и "
+                                + (". Для product исправь answer_support: итоговый текст "
+                                   "собирается только из text его элементов; поле answer не нужно. "
+                                   if self.reviewer is None else ". ")
+                                + "Проверь JSON, источники, дословные контакты и "
                                 "follow_up_question. Удали неподтверждённые выводы из answer целиком, "
                                 "а не только измени память или ссылки. Если нужны лишь возможности, "
                                 "не изобретай техническую схему. Сохрани "
@@ -1029,8 +1042,13 @@ class EnergyConsultant:
 
 
 def create_consultant():
+    mode = os.getenv("LLM_GROUNDING_MODE", "segments").strip()
+    if mode not in {"segments", "review"}:
+        raise ValueError("LLM_GROUNDING_MODE must be segments or review")
     client = ModelClient(ModelConfig.from_env())
-    return EnergyConsultant(client, reviewer=GroundingReviewer(client))
+    if mode == "review":
+        return EnergyConsultant(client, reviewer=GroundingReviewer(client))
+    return EnergyConsultant(client)
 
 
 class GroundingReviewer:

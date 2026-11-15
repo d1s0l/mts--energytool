@@ -114,14 +114,22 @@ class ConsultantTests(unittest.TestCase):
                 asyncio.run(EnergyConsultant(client)(text="Цена?", history=[], search=Search()))
                 self.assertEqual(client.calls, 2)
 
-    def test_uncited_additional_sentence_is_repaired(self):
+    def test_unused_answer_is_ignored_without_extra_generation(self):
         original = output()
         bad = json.loads(original)
         bad["answer"] += " Монтаж на фасаде дороже."
         client = Client([json.dumps(bad, ensure_ascii=False), original])
         reply = asyncio.run(EnergyConsultant(client)(text="Цена?", history=[], search=Search()))
-        self.assertEqual(client.calls, 2)
+        self.assertEqual(client.calls, 1)
         self.assertNotIn("фасаде", reply.text)
+
+    def test_product_answer_can_omit_answer_field(self):
+        draft = json.loads(output())
+        draft.pop("answer")
+        client = Client([json.dumps(draft, ensure_ascii=False)])
+        reply = asyncio.run(EnergyConsultant(client)(text="Цена?", history=[], search=Search()))
+        self.assertEqual(client.calls, 1)
+        self.assertIn("25 000", reply.text)
 
     def test_number_from_another_claim_cannot_support_current_claim(self):
         client = Client(
@@ -452,12 +460,14 @@ class GroundingReviewTests(unittest.TestCase):
         self.assertEqual(client.calls, 2)
         self.assertIn("25 000", reply.text)
 
-    def test_factory_enables_review_by_default(self):
+    def test_factory_uses_segments_and_allows_explicit_review(self):
         from consultant_impl import create_consultant
         with patch.dict(os.environ, {"LLM_BASE_URL": "http://provider", "LLM_API_KEY": "test-only",
                                     "LLM_MODEL": "platform-model"}, clear=True):
             consultant = create_consultant()
-        self.assertIsInstance(consultant.reviewer, GroundingReviewer)
+            self.assertIsNone(consultant.reviewer)
+            os.environ["LLM_GROUNDING_MODE"] = "review"
+            self.assertIsInstance(create_consultant().reviewer, GroundingReviewer)
 
 
 
