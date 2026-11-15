@@ -10,6 +10,7 @@ import collections
 import csv
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -20,6 +21,14 @@ import urllib.request
 import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
+
+
+LOGGER = logging.getLogger("rag_search")
+if not LOGGER.handlers:
+    # The submission adapter does not configure logging; emit safe diagnostics to stderr.
+    LOGGER.addHandler(logging.StreamHandler())
+    LOGGER.setLevel(getattr(logging, os.getenv("RAG_LOG_LEVEL", "INFO").strip().upper(), logging.INFO))
+    LOGGER.propagate = False
 
 
 def _env(name, default=""):
@@ -57,7 +66,7 @@ class Config:
     @classmethod
     def from_env(cls):
         return cls(
-            mode=_env("RAG_MODE", "auto"), top_k=int(_env("TOP_K", "6")),
+            mode=_env("RAG_MODE", "local"), top_k=int(_env("TOP_K", "4")),
             chunk_chars=int(_env("RAG_CHUNK_CHARS", "1800")),
             overlap_chars=int(_env("RAG_OVERLAP_CHARS", "240")),
             candidates=int(_env("RAG_CANDIDATES", "30")),
@@ -155,40 +164,130 @@ class Chunk:
 
 def _documents(path, limit):
     path = Path(path)
+    if not path.exists():
+        LOGGER.error("rag_kb_load_failed reason=knowledge_base_not_found path=%s", path)
+        raise FileNotFoundError(f"knowledge base not found: {path}")
     total = 0
     docs = []
     if path.is_dir():
+        root = path.resolve()
         for p in sorted(path.rglob("*")):
             if p.is_symlink() or not p.is_file() or p.suffix.lower() not in {".md", ".txt"}:
                 continue
-            if not p.resolve().is_relative_to(path.resolve()):
+            if not p.resolve().is_relative_to(root):
                 continue
-            total += p.stat().st_size
-            if total > limit:
-                raise ValueError("knowledge base exceeds byte limit")
-            docs.append((p.relative_to(path).as_posix(), p.read_text(encoding="utf-8-sig")))
-    elif path.is_file() and zipfile.is_zipfile(path):
-        with zipfile.ZipFile(path) as z:
-            seen = set()
-            for info in sorted(z.infolist(), key=lambda i: i.filename):
-                name = info.filename
-                p = PurePosixPath(name)
-                if info.is_dir() or p.suffix.lower() not in {".md", ".txt"} or "__MACOSX" in p.parts:
-                    continue
-                if p.is_absolute() or ".." in p.parts or "\\" in name or name in seen:
-                    raise ValueError("unsafe or duplicate ZIP member")
-                seen.add(name)
-                total += info.file_size
-                if total > limit:
+            name = p.relative_to(path).as_posix()
+            try:
+                size = p.stat().st_size
+                if total + size > limit:
+                    LOGGER.error(
+                        "rag_kb_load_failed reason=byte_limit_exceeded source=%s "
+                        "limit_bytes=%d",
+                        name, limit,
+                    )
                     raise ValueError("knowledge base exceeds byte limit")
-                # Read directly; never extract archive paths to the filesystem.
-                docs.append((name, z.read(info).decode("utf-8-sig")))
+                raw = p.read_bytes()
+                if total + len(raw) > limit:
+                    LOGGER.error(
+                        "rag_kb_load_failed reason=byte_limit_exceeded source=%s "
+                        "limit_bytes=%d",
+                        name, limit,
+                    )
+                    raise ValueError("knowledge base exceeds byte limit")
+                text = raw.decode("utf-8-sig")
+            except UnicodeError as exc:
+                LOGGER.error(
+                    "rag_document_read_failed source=%s reason=invalid_utf8 error_type=%s",
+                    name, type(exc).__name__,
+                )
+                raise ValueError(f"cannot decode knowledge document '{name}' as UTF-8") from exc
+            except OSError as exc:
+                LOGGER.error(
+                    "rag_document_read_failed source=%s reason=read_error error_type=%s",
+                    name, type(exc).__name__,
+                )
+                raise OSError(f"cannot read knowledge document '{name}'") from exc
+            total += len(raw)
+            docs.append((name, text))
+    elif path.is_file():
+        try:
+            is_zip = zipfile.is_zipfile(path)
+        except OSError as exc:
+            LOGGER.error(
+                "rag_kb_load_failed reason=archive_read_error path=%s error_type=%s",
+                path, type(exc).__name__,
+            )
+            raise OSError(f"cannot read knowledge-base archive: {path}") from exc
+        if not is_zip:
+            LOGGER.error("rag_kb_load_failed reason=invalid_zip path=%s", path)
+            raise ValueError(f"knowledge-base file is not a readable ZIP archive: {path}")
+        try:
+            with zipfile.ZipFile(path) as z:
+                seen = set()
+                for info in sorted(z.infolist(), key=lambda i: i.filename):
+                    name = info.filename
+                    p = PurePosixPath(name)
+                    if info.is_dir() or p.suffix.lower() not in {".md", ".txt"} or "__MACOSX" in p.parts:
+                        continue
+                    if p.is_absolute() or ".." in p.parts or "\\" in name or name in seen:
+                        LOGGER.error(
+                            "rag_kb_load_failed reason=unsafe_or_duplicate_zip_member source=%s",
+                            name,
+                        )
+                        raise ValueError(f"unsafe or duplicate ZIP member: {name}")
+                    seen.add(name)
+                    if total + info.file_size > limit:
+                        LOGGER.error(
+                            "rag_kb_load_failed reason=byte_limit_exceeded source=%s "
+                            "limit_bytes=%d",
+                            name, limit,
+                        )
+                        raise ValueError("knowledge base exceeds byte limit")
+                    try:
+                        # Read directly; never extract archive paths to the filesystem.
+                        raw = z.read(info)
+                        if total + len(raw) > limit:
+                            LOGGER.error(
+                                "rag_kb_load_failed reason=byte_limit_exceeded source=%s "
+                                "limit_bytes=%d",
+                                name, limit,
+                            )
+                            raise ValueError("knowledge base exceeds byte limit")
+                        text = raw.decode("utf-8-sig")
+                    except UnicodeError as exc:
+                        LOGGER.error(
+                            "rag_document_read_failed source=%s reason=invalid_utf8 error_type=%s",
+                            name, type(exc).__name__,
+                        )
+                        raise ValueError(
+                            f"cannot decode knowledge document '{name}' as UTF-8"
+                        ) from exc
+                    except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+                        LOGGER.error(
+                            "rag_document_read_failed source=%s reason=archive_member_read_error "
+                            "error_type=%s",
+                            name, type(exc).__name__,
+                        )
+                        raise OSError(f"cannot read knowledge document '{name}' from archive") from exc
+                    total += len(raw)
+                    docs.append((name, text))
+        except zipfile.BadZipFile as exc:
+            LOGGER.error(
+                "rag_kb_load_failed reason=invalid_zip path=%s error_type=%s",
+                path, type(exc).__name__,
+            )
+            raise ValueError(f"knowledge-base ZIP archive is corrupted: {path}") from exc
     else:
-        raise FileNotFoundError("expected knowledge-base directory or ZIP")
+        LOGGER.error("rag_kb_load_failed reason=unsupported_path path=%s", path)
+        raise ValueError(f"expected knowledge-base directory or ZIP: {path}")
     docs = [(n, t) for n, t in docs if t.strip()]
     if not docs:
+        LOGGER.error(
+            "rag_kb_load_failed reason=no_nonempty_documents path=%s input_bytes=%d",
+            path, total,
+        )
         raise ValueError("knowledge base has no nonempty Markdown/TXT documents")
-    return docs
+    return docs, total
 
 
 def _chunks(source, text, cfg):
@@ -277,8 +376,19 @@ class KnowledgeSearch:
         self._query_cache = collections.OrderedDict()
         self._init_warnings = []
         started = time.perf_counter()
-        docs = _documents(knowledge_path, self.config.max_input_bytes)
+        stage = time.perf_counter()
+        docs, input_bytes = _documents(knowledge_path, self.config.max_input_bytes)
+        build_timing = {"load_ms": round((time.perf_counter()-stage)*1000, 3)}
+        stage = time.perf_counter()
         self.chunks = tuple(c for n, t in docs for c in _chunks(n, t, self.config))
+        build_timing["chunk_ms"] = round((time.perf_counter()-stage)*1000, 3)
+        if not self.chunks:
+            LOGGER.error(
+                "rag_index_build_failed reason=no_searchable_chunks documents=%d input_bytes=%d",
+                len(docs), input_bytes,
+            )
+            raise ValueError("knowledge base produced no searchable text fragments")
+        stage = time.perf_counter()
         self._tf = []
         self._lengths = []
         self._postings = collections.defaultdict(list)
@@ -300,8 +410,10 @@ class KnowledgeSearch:
         for term in self._postings:
             if len(term) >= 4:
                 self._prefixes[term[:4]].append(term)
+        build_timing["local_index_ms"] = round((time.perf_counter()-stage)*1000, 3)
         self._vectors = None
         cfg = self.config
+        stage = time.perf_counter()
         if cfg.mode != "local" and cfg.base_url and cfg.api_key:
             try:
                 vectors = []
@@ -311,12 +423,46 @@ class KnowledgeSearch:
                     raise ValueError("inconsistent embedding dimensions")
                 self._vectors = tuple(vectors)
             except Exception as exc:
-                self._init_warnings.append("embedding_index_unavailable:" + type(exc).__name__)
-        elif cfg.mode == "hybrid":
-            self._init_warnings.append("embedding_credentials_missing")
-        self.info = {"documents": len(docs), "chunks": len(self.chunks),
-                     "embedding_index_ready": self._vectors is not None,
-                     "build_ms": round((time.perf_counter()-started)*1000, 3)}
+                self._init_warnings.extend([
+                    "embedding_index_unavailable:" + type(exc).__name__,
+                    "fallback_local:embedding_index_unavailable",
+                ])
+                LOGGER.warning(
+                    "rag_embedding_index_failed error_type=%s fallback=local",
+                    type(exc).__name__,
+                )
+        elif cfg.mode != "local":
+            missing = ",".join(
+                name for name, value in (("base_url", cfg.base_url), ("api_key", cfg.api_key))
+                if not value
+            )
+            self._init_warnings.extend([
+                "embedding_credentials_missing",
+                "fallback_local:embedding_credentials_missing",
+            ])
+            LOGGER.warning(
+                "rag_embedding_configuration_incomplete missing=%s fallback=local", missing,
+            )
+        build_timing["embeddings_ms"] = round((time.perf_counter()-stage)*1000, 3)
+        build_timing["total_ms"] = round((time.perf_counter()-started)*1000, 3)
+        self.info = {
+            "documents": len(docs), "chunks": len(self.chunks),
+            "input_bytes": input_bytes,
+            "embedding_index_ready": self._vectors is not None,
+            "effective_mode": "hybrid" if self._vectors is not None else "local",
+            "warnings": list(self._init_warnings),
+            "build_ms": build_timing["total_ms"], "timing_ms": build_timing,
+        }
+        LOGGER.info(
+            "rag_index_ready documents=%d chunks=%d input_bytes=%d mode=%s "
+            "embedding_index_ready=%s load_ms=%.3f chunk_ms=%.3f "
+            "local_index_ms=%.3f embeddings_ms=%.3f total_ms=%.3f",
+            self.info["documents"], self.info["chunks"], self.info["input_bytes"],
+            self.info["effective_mode"], self.info["embedding_index_ready"],
+            build_timing["load_ms"], build_timing["chunk_ms"],
+            build_timing["local_index_ms"], build_timing["embeddings_ms"],
+            build_timing["total_ms"],
+        )
 
     @staticmethod
     def _embedding_text(c):
@@ -343,7 +489,9 @@ class KnowledgeSearch:
                         raise ValueError("API response exceeds limit")
                     return json.loads(raw)
             except urllib.error.HTTPError as exc:
-                if exc.code not in {429, 500, 502, 503, 504} or attempt == cfg.retries:
+                retry = exc.code in {429, 500, 502, 503, 504} and attempt < cfg.retries
+                exc.close()
+                if not retry:
                     raise
             except (urllib.error.URLError, TimeoutError):
                 if attempt == cfg.retries:
@@ -439,7 +587,11 @@ class KnowledgeSearch:
         if lexical:
             qchars = self._char_vector(_grams(query))
             char_scores = [sum(value*v.get(g,0) for g,value in qchars.items()) for v in self._char_vectors]
-            ranks.append((sorted(range(len(char_scores)), key=lambda i:(-char_scores[i],i)), 0.35))
+            char_ranking = sorted(
+                (i for i, score in enumerate(char_scores) if score > 0),
+                key=lambda i: (-char_scores[i], i),
+            )
+            ranks.append((char_ranking, 0.35))
         timing["local_ms"] = round((time.perf_counter()-started)*1000, 3)
         mode = "local"
         if self._vectors is not None and question.strip():
@@ -460,7 +612,14 @@ class KnowledgeSearch:
                 ranks.append((dense, 1.0))
                 mode = "hybrid"
             except Exception as exc:
-                warnings.append("query_embedding_unavailable:" + type(exc).__name__)
+                warnings.extend([
+                    "query_embedding_unavailable:" + type(exc).__name__,
+                    "fallback_local:query_embedding_unavailable",
+                ])
+                LOGGER.warning(
+                    "rag_query_embedding_failed error_type=%s fallback=local",
+                    type(exc).__name__,
+                )
             timing["embeddings_ms"] = round((time.perf_counter()-stage)*1000, 3)
         stage = time.perf_counter()
         fused = collections.defaultdict(float)
@@ -487,7 +646,14 @@ class KnowledgeSearch:
                 order = [order[i] for i in indices] + [v for i,v in enumerate(order) if i not in indices]
                 reranked = True
             except Exception as exc:
-                warnings.append("reranker_unavailable:" + type(exc).__name__)
+                warnings.extend([
+                    "reranker_unavailable:" + type(exc).__name__,
+                    "fallback_candidates:reranker_unavailable",
+                ])
+                LOGGER.warning(
+                    "rag_reranker_failed error_type=%s fallback=candidate_order",
+                    type(exc).__name__,
+                )
             timing["reranker_ms"] = round((time.perf_counter()-stage)*1000, 3)
         stage = time.perf_counter()
         selected = []
@@ -509,6 +675,15 @@ class KnowledgeSearch:
                           ("чего утверждать нельзя", "что мы не делаем", "область применения"))]
         timing["selection_ms"] = round((time.perf_counter()-stage)*1000, 3)
         timing["total_ms"] = round((time.perf_counter()-started)*1000, 3)
+        LOGGER.info(
+            "rag_search_complete query_chars=%d top_k=%d hits=%d sources=%d mode=%s "
+            "reranked=%s warnings=%d local_ms=%.3f embeddings_ms=%.3f "
+            "fusion_ms=%.3f reranker_ms=%.3f selection_ms=%.3f total_ms=%.3f",
+            len(question), k, len(hits), len({hit["source"] for hit in hits}), mode,
+            reranked, len(warnings), timing["local_ms"], timing["embeddings_ms"],
+            timing["fusion_ms"], timing["reranker_ms"], timing["selection_ms"],
+            timing["total_ms"],
+        )
         return {"schema_version": 1, "query": question,
                 "hits": hits, "sources": list(dict.fromkeys(h["source"] for h in hits)),
                 "guardrails": guards,

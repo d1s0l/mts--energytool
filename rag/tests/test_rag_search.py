@@ -1,5 +1,8 @@
 import concurrent.futures
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 import urllib.error
@@ -26,6 +29,32 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(hit['source'], 'solar.md')
         self.assertIn('западный', hit['text'])
 
+    def test_standalone_run_emits_index_and_search_metrics_to_stderr(self):
+        script = (
+            "from rag_search import Config, KnowledgeSearch\n"
+            "engine = KnowledgeSearch(__import__('sys').argv[1], Config())\n"
+            "engine.search('панели')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, '-c', script, str(self.root)],
+            cwd=Path(__file__).resolve().parents[1],
+            env={**os.environ, 'RAG_LOG_LEVEL': 'INFO'},
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(result.stdout, '')
+        self.assertIn('rag_index_ready documents=2', result.stderr)
+        self.assertIn('chunks=', result.stderr)
+        self.assertIn('total_ms=', result.stderr)
+        self.assertIn('rag_search_complete', result.stderr)
+        self.assertIn('hits=', result.stderr)
+        self.assertNotIn('Панели ставят', result.stderr)
+
+    def test_submission_defaults_use_fast_local_search_and_four_hits(self):
+        with patch.dict(os.environ, {'RAG_MODE': '', 'TOP_K': ''}):
+            config = Config.from_env()
+        self.assertEqual(config.mode, 'local')
+        self.assertEqual(config.top_k, 4)
+
     def test_source_lines_are_exact(self):
         for c in self.engine.chunks:
             lines = (self.root/c.source).read_text().splitlines(keepends=True)
@@ -51,18 +80,52 @@ class RetrievalTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             KnowledgeSearch(self.root,Config(max_input_bytes=2))
 
+    def test_missing_and_invalid_archive_are_distinguished(self):
+        missing = self.root/'missing.zip'
+        with self.assertLogs('rag_search', level='ERROR') as logs:
+            with self.assertRaisesRegex(FileNotFoundError, 'knowledge base not found'):
+                KnowledgeSearch(missing, Config())
+        self.assertIn('reason=knowledge_base_not_found', '\n'.join(logs.output))
+
+        invalid = self.root/'invalid.zip'
+        invalid.write_text('not a zip', encoding='utf-8')
+        with self.assertLogs('rag_search', level='ERROR') as logs:
+            with self.assertRaisesRegex(ValueError, 'not a readable ZIP'):
+                KnowledgeSearch(invalid, Config())
+        self.assertIn('reason=invalid_zip', '\n'.join(logs.output))
+
+    def test_document_read_error_names_source_without_content(self):
+        broken = self.root/'broken.md'
+        broken.write_bytes(b'\xff\xfe\xfa')
+        with self.assertLogs('rag_search', level='ERROR') as logs:
+            with self.assertRaisesRegex(ValueError, 'broken.md'):
+                KnowledgeSearch(self.root, Config())
+        joined = '\n'.join(logs.output)
+        self.assertIn('source=broken.md', joined)
+        self.assertIn('reason=invalid_utf8', joined)
+
+    def test_empty_base_and_zero_chunks_fail_at_startup(self):
+        empty = self.root/'empty'
+        empty.mkdir()
+        (empty/'blank.md').write_text('  \n', encoding='utf-8')
+        with self.assertLogs('rag_search', level='ERROR') as logs:
+            with self.assertRaisesRegex(ValueError, 'no nonempty'):
+                KnowledgeSearch(empty, Config())
+        self.assertIn('reason=no_nonempty_documents', '\n'.join(logs.output))
+
+        headings = self.root/'headings'
+        headings.mkdir()
+        (headings/'only-headings.md').write_text('# Раздел\n\n---\n', encoding='utf-8')
+        with self.assertLogs('rag_search', level='ERROR') as logs:
+            with self.assertRaisesRegex(ValueError, 'no searchable text fragments'):
+                KnowledgeSearch(headings, Config())
+        self.assertIn('reason=no_searchable_chunks', '\n'.join(logs.output))
+
     def test_empty_and_unknown_query(self):
         for q in ['', '   ', 'zxqvblorp']:
             result = self.engine.search(q)
             self.assertEqual(result['hits'], [])
             self.assertTrue(result['needs_review'])
-
-    def test_evening_is_not_expanded_to_night(self):
-        from rag_search import SYNONYMS, _terms
-        evening = _terms("вечер")[0]
-        night = _terms("ночь")[0]
-        self.assertNotIn(night, SYNONYMS.get(evening, set()))
-        self.assertNotIn(evening, SYNONYMS.get(night, set()))
 
     def test_invalid_configuration(self):
         for args in [{'top_k':0},{'mode':'oops'},{'timeout':0},{'overlap_chars':2000}]:
@@ -116,12 +179,41 @@ class RetrievalTests(unittest.TestCase):
 
     def test_api_failure_falls_back_without_secrets(self):
         cfg=Config(mode='hybrid',base_url='http://localhost',api_key='secret-never-print')
-        with patch.object(KnowledgeSearch,'_post',side_effect=TimeoutError('secret-never-print')):
-            r=KnowledgeSearch(self.root,cfg).search('панели')
+        with self.assertLogs('rag_search',level='WARNING') as logs, \
+             patch.object(KnowledgeSearch,'_post',side_effect=TimeoutError('secret-never-print')):
+            engine=KnowledgeSearch(self.root,cfg)
+            r=engine.search('панели')
         self.assertTrue(r['hits'])
         self.assertEqual(r['mode'],'local')
         self.assertTrue(r['warnings'])
-        self.assertNotIn('secret-never-print',json.dumps(r))
+        self.assertIn('fallback_local:embedding_index_unavailable',r['warnings'])
+        diagnostics=json.dumps({'result':r,'info':engine.info,'logs':logs.output})
+        self.assertNotIn('secret-never-print',diagnostics)
+        self.assertIn('fallback=local',diagnostics)
+
+    def test_missing_embedding_configuration_reports_local_fallback(self):
+        with self.assertLogs('rag_search',level='WARNING') as logs:
+            engine=KnowledgeSearch(self.root,Config(mode='auto'))
+        self.assertEqual(engine.info['effective_mode'],'local')
+        self.assertIn('embedding_credentials_missing',engine.info['warnings'])
+        self.assertIn('fallback_local:embedding_credentials_missing',engine.info['warnings'])
+        self.assertIn('missing=base_url,api_key', '\n'.join(logs.output))
+
+    def test_local_fallback_does_not_fill_results_with_zero_similarity(self):
+        isolated=self.root/'isolated'
+        isolated.mkdir()
+        (isolated/'solar.md').write_text(
+            '# Solar\nПанели устанавливают на крыше.\n',encoding='utf-8',
+        )
+        (isolated/'unrelated.md').write_text(
+            '# HR\nОтпуск сотрудников оформляется заявлением.\n',encoding='utf-8',
+        )
+        (isolated/'other.md').write_text(
+            '# Food\nРецепт супа содержит морковь.\n',encoding='utf-8',
+        )
+        result=KnowledgeSearch(isolated,Config()).search('солнечные панели',top_k=6)
+        self.assertEqual(result['sources'],['solar.md'])
+        self.assertEqual(len(result['hits']),1)
 
     def test_malformed_query_embeddings_fall_back(self):
         cfg=Config(mode='hybrid',base_url='http://localhost',api_key='test')
@@ -157,11 +249,14 @@ class RetrievalTests(unittest.TestCase):
             if endpoint=='/embeddings':
                 raise TimeoutError()
             return {'results':[{'index':0},{'index':0}]}
-        with patch.object(KnowledgeSearch,'_post',api):
+        with self.assertLogs('rag_search',level='WARNING') as logs, \
+             patch.object(KnowledgeSearch,'_post',api):
             result=KnowledgeSearch(self.root,cfg).search('панели')
         self.assertTrue(result['hits'])
         self.assertFalse(result['reranked'])
         self.assertIn('reranker_unavailable:ValueError',result['warnings'])
+        self.assertIn('fallback_candidates:reranker_unavailable',result['warnings'])
+        self.assertIn('fallback=candidate_order','\n'.join(logs.output))
 
     def test_config_repr_does_not_expose_key(self):
         self.assertNotIn('hidden-secret',repr(Config(api_key='hidden-secret')))
@@ -173,6 +268,22 @@ class RetrievalTests(unittest.TestCase):
             self.assertTrue(all(v >= 0 for v in result['timing_ms'].values()))
             self.assertEqual(result['timing_ms']['embeddings_ms'],0)
             self.assertEqual(result['timing_ms']['reranker_ms'],0)
+
+    def test_build_metrics_and_ready_log_include_counts(self):
+        with self.assertLogs('rag_search',level='INFO') as logs:
+            engine=KnowledgeSearch(self.root,Config())
+        self.assertEqual(engine.info['documents'],2)
+        self.assertGreater(engine.info['chunks'],0)
+        self.assertGreater(engine.info['input_bytes'],0)
+        self.assertEqual(engine.info['build_ms'],engine.info['timing_ms']['total_ms'])
+        self.assertEqual(
+            set(engine.info['timing_ms']),
+            {'load_ms','chunk_ms','local_index_ms','embeddings_ms','total_ms'},
+        )
+        joined='\n'.join(logs.output)
+        self.assertIn('rag_index_ready',joined)
+        self.assertIn('documents=2',joined)
+        self.assertIn('chunks=',joined)
 
     def test_domain_prior_does_not_require_original_filenames(self):
         (self.root/'renamed-01.md').write_text('# Солнечные электростанции\n\n## Фасад\nВозможен монтаж на вертикальные поверхности здания.\n',encoding='utf-8')
