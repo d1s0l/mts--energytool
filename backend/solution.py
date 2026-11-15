@@ -75,6 +75,17 @@ def stage(name):
     except Exception as exc:
         diagnose(name, exc, elapsed_ms=round((time.monotonic() - started) * 1000, 3))
         raise
+    else:
+        print(
+            json.dumps(
+                {
+                    "event": "stage_completed",
+                    "stage": name,
+                    "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+                }
+            ),
+            file=sys.stderr,
+        )
 
 
 def find_file(data_dir: Path, *names: str) -> Path:
@@ -207,6 +218,18 @@ async def answer_questions(
                 if len(reply.text) > 10000:
                     raise ValueError("An answer exceeds the platform limit of 10000 characters")
                 answers[index] = reply.text
+                print(
+                    json.dumps(
+                        {
+                            "event": "question_completed",
+                            "question_id": qid,
+                            "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+                            "search_ms": reply.search_ms,
+                            "generation_ms": reply.generation_ms,
+                        }
+                    ),
+                    file=sys.stderr,
+                )
             except ModelRateLimited as exc:
                 retries = rate_limit_retries.get(index, 0)
                 delay = max(60, exc.retry_after)
@@ -304,14 +327,15 @@ async def run(
             find_file(data_dir, "knowledge-base.zip", "knowledge_base.zip", "kb.zip"),
             Config.from_env(),
         )
-    answers = await answer_questions(
-        questions,
-        engine,
-        consultant,
-        max_workers,
-        deadline=deadline,
-        checkpoint=lambda completed: write_submission(output, questions, completed),
-    )
+    with stage("answer_questions"):
+        answers = await answer_questions(
+            questions,
+            engine,
+            consultant,
+            max_workers,
+            deadline=deadline,
+            checkpoint=lambda completed: write_submission(output, questions, completed),
+        )
     with stage("final_save"):
         for attempt in range(3):
             try:

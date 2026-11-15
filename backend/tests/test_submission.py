@@ -27,7 +27,7 @@ def test_dialog_separates_last_question_from_history(separator):
     assert split_dialog("Обычный вопрос") == ("Обычный вопрос", [])
 
 
-def test_parallel_answers_preserve_ids_csv_and_isolation(tmp_path):
+def test_parallel_answers_preserve_ids_csv_and_isolation(tmp_path, capsys):
     (tmp_path / "kb.md").write_text("# Учёт\nУчёт по складам.\n", encoding="utf-8")
     engine = KnowledgeSearch(tmp_path, Config(mode="local"))
     questions = [("2", "Первый"), ("1", "Пользователь: Склады\nПользователь: Учёт")]
@@ -42,6 +42,12 @@ def test_parallel_answers_preserve_ids_csv_and_isolation(tmp_path):
         return ConsultantReply(text=f'{text}, "ответ"\nвторая строка')
 
     answers = asyncio.run(answer_questions(questions, engine, consultant, 2))
+    import json
+
+    events = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    assert {event["question_id"] for event in events} == {"1", "2"}
+    assert all(event["event"] == "question_completed" for event in events)
+    assert all(event["elapsed_ms"] >= 0 for event in events)
     output = tmp_path / "submission.csv"
     write_submission(output, questions, answers)
     with output.open(newline="", encoding="utf-8") as stream:
