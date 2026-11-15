@@ -35,6 +35,7 @@ export interface SessionHistoryResponse extends Session {
 
 export interface SessionDebugItem {
   message_id: string;
+  role?: 'user' | 'assistant';
   created_at: string;
   debug: DebugMetadata | null;
 }

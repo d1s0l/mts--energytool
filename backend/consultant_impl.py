@@ -853,11 +853,32 @@ class EnergyConsultant:
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ]
         started = time.perf_counter()
+        raw_response_attempts = []
+        parsed_response = None
+        validation_errors = []
+
+        def failure_debug():
+            return {
+                "raw_response": raw_response_attempts[-1] if raw_response_attempts else None,
+                "raw_response_attempts": list(raw_response_attempts),
+                "parsed_response": parsed_response,
+                "validation_errors": list(validation_errors),
+                "final_response": None,
+            }
+
         for attempt in range(2):
-            raw = await self.client.complete(prompt)
+            try:
+                raw = await self.client.complete(prompt)
+            except ConsultantUnavailable as exc:
+                exc.debug = failure_debug()
+                raise
+            raw_response_attempts.append(raw)
+            parsed_response = None
             try:
                 clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
                 data = json.loads(clean)
+                # Keep the model JSON before application normalization and memory updates.
+                parsed_response = json.loads(clean)
                 if not isinstance(data, dict):
                     raise ValueError("Expected object")
                 ids = data.get("evidence_ids", [])
@@ -992,6 +1013,10 @@ class EnergyConsultant:
                 validate_project_claims(answer,current_plan)
                 return ConsultantReply(
                     text=answer.strip(),
+                    raw_response=raw,
+                    raw_response_attempts=list(raw_response_attempts),
+                    parsed_response=parsed_response,
+                    validation_errors=list(validation_errors),
                     dialog_memory=remember_question(next_memory, (current_plan["field"] if current_plan else question_slot(data.get("follow_up_question"))) if "?" in answer else None, messages[-1]["message_id"]),
                     requested_action=action,
                     memory_warnings=memory_warnings,
@@ -1016,6 +1041,7 @@ class EnergyConsultant:
                 if reason.startswith("Grounding review rejected"):
                     reason = "grounding_review_rejected"  # Review details can quote client data.
                 log.warning("Consultant output rejected (%s)", reason)
+                validation_errors.append(f"Attempt {attempt + 1}: {type(exc).__name__}: {reason}")
                 if attempt == 0:
                     prompt.append({"role": "assistant", "content": raw[:12000]})
                     prompt.append(
@@ -1038,7 +1064,7 @@ class EnergyConsultant:
                             ),
                         }
                     )
-        raise ConsultantUnavailable("Model output failed validation")
+        raise ConsultantUnavailable("Model output failed validation", debug=failure_debug())
 
 
 def create_consultant():

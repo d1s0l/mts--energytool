@@ -224,6 +224,16 @@ class ConsultantTests(unittest.TestCase):
         self.assertEqual(client.calls, 1)
         self.assertEqual(reply.sources[0].fragment_id, "fact")
         self.assertIn("зависит от проекта", reply.text)
+        self.assertEqual(reply.raw_response, output())
+        self.assertEqual(reply.parsed_response, json.loads(output()))
+        self.assertEqual(reply.validation_errors, [])
+
+    def test_failed_json_is_available_in_debug(self):
+        with self.assertRaises(ConsultantUnavailable) as caught:
+            asyncio.run(EnergyConsultant(Client(["broken", "broken again"]))(text="Цена?", history=[], search=Search()))
+        self.assertEqual(caught.exception.debug["raw_response_attempts"], ["broken", "broken again"])
+        self.assertIsNone(caught.exception.debug["parsed_response"])
+        self.assertEqual(len(caught.exception.debug["validation_errors"]), 2)
 
     def test_invented_number_repaired_once(self):
         client = Client([output(answer="Стоимость 999 рублей"), output()])

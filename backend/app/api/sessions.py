@@ -95,8 +95,10 @@ async def get_session_debug(session_id: UUID, request: Request, include_deleted:
         if await cursor.fetchone() is None:
             raise HTTPException(404, "session_not_found")
         cursor = await conn.execute(
-            "SELECT id AS message_id, created_at, debug FROM messages "
-            "WHERE session_id = %s AND role = 'assistant' ORDER BY position",
+                "SELECT id AS message_id, role, created_at, debug FROM messages "
+            "WHERE session_id = %s AND (role = 'assistant' OR "
+            "(role = 'user' AND debug IS NOT NULL)) "
+            "ORDER BY position",
             (session_id,),
         )
         return {"session_id": session_id, "items": await cursor.fetchall()}
@@ -217,8 +219,14 @@ async def send_message(session_id: UUID, body: SendMessageIn, request: Request):
                 "memory_warnings": reply.memory_warnings,
                 "search_ms": reply.search_ms,
                 "generation_ms": reply.generation_ms,
+                "raw_response": reply.raw_response,
+                "parsed_response": reply.parsed_response,
+                "validation_errors": reply.validation_errors,
+                "final_response": reply.text,
                 "sources": [source.model_dump(mode="json") for source in reply.sources],
             }
+            if len(reply.raw_response_attempts) > 1:
+                debug["raw_response_attempts"] = reply.raw_response_attempts
             cursor = await conn.execute(
                 "INSERT INTO messages(session_id, role, text, debug, request_id) "
                 "VALUES (%s, 'assistant', %s, %s, %s) RETURNING *",
@@ -258,9 +266,17 @@ async def send_message(session_id: UUID, body: SendMessageIn, request: Request):
                     (session_id, token),
                 )
                 if await cursor.fetchone():
-                    await conn.execute(
-                        "UPDATE messages SET status = 'failed' WHERE id = %s", (user_message["id"],)
-                    )
+                    debug = getattr(exc, "debug", None)
+                    if debug:
+                        await conn.execute(
+                            "UPDATE messages SET status = 'failed', debug = %s WHERE id = %s",
+                            (Jsonb(debug), user_message["id"]),
+                        )
+                    else:
+                        await conn.execute(
+                            "UPDATE messages SET status = 'failed' WHERE id = %s",
+                            (user_message["id"],),
+                        )
 
         await asyncio.shield(cleanup())
         if isinstance(exc, TimeoutError):

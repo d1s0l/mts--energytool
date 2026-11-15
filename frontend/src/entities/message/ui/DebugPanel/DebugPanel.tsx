@@ -1,3 +1,5 @@
+import { useState } from 'react';
+
 import type { DebugMetadata } from '@/entities/message/model/types';
 import styles from './DebugPanel.module.scss';
 
@@ -11,9 +13,75 @@ function formatDuration(value: number | null): string {
 }
 
 export function DebugPanel({ metadata }: DebugPanelProps) {
+  const [copyStatus, setCopyStatus] = useState<{ key: string; message: string } | null>(null);
+
   if (!metadata) {
     return <p className={styles.empty}>Отладочные данные отсутствуют</p>;
   }
+
+  const parsedResponse =
+    metadata.parsed_response === undefined
+      ? null
+      : JSON.stringify(metadata.parsed_response, null, 2);
+  const hasValidationErrors = metadata.validation_errors !== undefined &&
+    metadata.validation_errors !== null;
+  const validationErrors =
+    metadata.validation_errors === undefined || metadata.validation_errors === null
+      ? null
+      : metadata.validation_errors.length > 0
+        ? JSON.stringify(metadata.validation_errors, null, 2)
+        : null;
+  const rawResponses =
+    metadata.raw_response_attempts && metadata.raw_response_attempts.length > 1
+      ? metadata.raw_response_attempts
+      : metadata.raw_response === null || metadata.raw_response === undefined
+        ? []
+        : [metadata.raw_response];
+  const blocks = [
+    {
+      key: 'raw',
+      title: 'Raw response',
+      content:
+        rawResponses.length > 1
+          ? rawResponses
+              .map((response, index) => `Attempt ${index + 1}\n${response}`)
+              .join('\n\n')
+          : rawResponses[0] ?? null,
+      empty: 'Сырой ответ отсутствует',
+    },
+    {
+      key: 'parsed',
+      title: 'Parsed JSON',
+      content: parsedResponse ?? null,
+      empty:
+        metadata.validation_errors?.length
+          ? 'JSON не удалось разобрать'
+          : 'Распарсенный JSON отсутствует',
+    },
+    {
+      key: 'validation',
+      title: 'Validation errors',
+      content: validationErrors,
+      empty: hasValidationErrors
+        ? 'Ошибки валидации отсутствуют'
+        : 'Данные валидации не сохранены',
+    },
+    {
+      key: 'final',
+      title: 'Final backend response',
+      content: metadata.final_response ?? null,
+      empty: 'Итоговый ответ отсутствует',
+    },
+  ];
+
+  const handleCopy = async (key: string, value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopyStatus({ key, message: 'Скопировано' });
+    } catch {
+      setCopyStatus({ key, message: 'Не удалось скопировать' });
+    }
+  };
 
   return (
     <section className={styles.panel} aria-label="Отладочная информация">
@@ -57,6 +125,34 @@ export function DebugPanel({ metadata }: DebugPanelProps) {
           ))}
         </div>
       )}
+
+      <h4 className={styles.sourcesTitle}>Raw LLM Response</h4>
+      <div className={styles.rawBlocks}>
+        {blocks.map((block) => (
+          <details className={styles.rawBlock} key={block.key}>
+            <summary>{block.title}</summary>
+            <div className={styles.rawContent}>
+              <pre>{block.content ?? block.empty}</pre>
+              <div className={styles.copyRow}>
+                <button
+                  type="button"
+                  disabled={block.content === null}
+                  onClick={() => {
+                    if (block.content !== null) {
+                      void handleCopy(block.key, block.content);
+                    }
+                  }}
+                >
+                  Копировать
+                </button>
+                {copyStatus?.key === block.key && (
+                  <span role="status">{copyStatus.message}</span>
+                )}
+              </div>
+            </div>
+          </details>
+        ))}
+      </div>
     </section>
   );
 }

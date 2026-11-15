@@ -113,6 +113,67 @@
   overflow-wrap: anywhere;
 }
 
+.rawBlocks {
+  display: grid;
+  gap: 8px;
+}
+
+.rawBlock {
+  min-width: 0;
+  padding: 9px 10px;
+  background: var(--mts-surface-muted);
+  border: 1px solid var(--mts-border);
+  border-radius: 7px;
+
+  summary {
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+  }
+}
+
+.rawContent {
+  min-width: 0;
+  margin-top: 8px;
+
+  pre {
+    max-height: 18rem;
+    min-width: 0;
+    margin: 0;
+    padding: 9px;
+    overflow: auto;
+    background: var(--mts-surface);
+    border-radius: 5px;
+    font: 12px/1.5 monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+}
+
+.copyRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--mts-ink-muted);
+  font-size: 12px;
+
+  button {
+    padding: 5px 8px;
+    color: var(--mts-ink);
+    background: var(--mts-surface);
+    border: 1px solid var(--mts-border);
+    border-radius: 5px;
+    cursor: pointer;
+
+    &:disabled {
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+  }
+}
+
 @media (max-width: 600px) {
   .metrics {
     grid-template-columns: 1fr;
