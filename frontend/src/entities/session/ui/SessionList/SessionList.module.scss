@@ -1,8 +1,9 @@
 .list {
   min-height: 0;
+  margin-right: -20px;
+  padding-right: 20px;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 12px;
 }
 
 .itemWrapper {
@@ -16,6 +17,11 @@
   border-radius: 9px;
 
   &.active {
+    background: var(--mts-red-soft);
+    border-color: var(--mts-red-soft);
+  }
+
+  &:hover{
     background: var(--mts-red-soft);
     border-color: var(--mts-red-soft);
   }
@@ -43,10 +49,6 @@
     white-space: nowrap;
   }
 
-  &:hover {
-    color: var(--mts-ink);
-    background: var(--mts-surface-muted);
-  }
 
   &:focus-visible {
     outline: 2px solid var(--mts-red);

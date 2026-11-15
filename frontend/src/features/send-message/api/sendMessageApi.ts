@@ -10,7 +10,11 @@ export const sendMessageApi = baseApi.injectEndpoints({
         body: { text },
       }),
 
-      invalidatesTags: (_result, _error, { sessionId }) => [{ type: 'Session', id: sessionId }],
+      invalidatesTags: (_result, _error, { sessionId }) => [
+        'Session',
+        { type: 'Session', id: sessionId },
+        { type: 'Message', id: sessionId },
+      ],
     }),
   }),
 });

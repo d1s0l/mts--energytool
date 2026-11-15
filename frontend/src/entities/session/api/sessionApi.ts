@@ -5,6 +5,7 @@ import type {
   SessionsResponse,
   GetSessionsParams,
   SessionHistoryResponse,
+  SessionDebugResponse,
 } from '../model/session.types';
 
 export const sessionApi = baseApi.injectEndpoints({
@@ -31,6 +32,11 @@ export const sessionApi = baseApi.injectEndpoints({
       providesTags: (_result, _error, sessionId) => [{ type: 'Session', id: sessionId }],
     }),
 
+    getSessionDebug: builder.query<SessionDebugResponse, string>({
+      query: (sessionId) => `/sessions/${sessionId}/debug`,
+      providesTags: (_result, _error, sessionId) => [{ type: 'Message', id: sessionId }],
+    }),
+
     deleteChat: builder.mutation<void, string>({
       query: (sessionId) => ({
         url: `/sessions/${sessionId}`,
@@ -41,4 +47,10 @@ export const sessionApi = baseApi.injectEndpoints({
   }),
 });
 
-export const { useCreateChatMutation, useGetChatsQuery, useGetChatQuery, useDeleteChatMutation } = sessionApi;
+export const {
+  useCreateChatMutation,
+  useGetChatsQuery,
+  useGetChatQuery,
+  useGetSessionDebugQuery,
+  useDeleteChatMutation,
+} = sessionApi;

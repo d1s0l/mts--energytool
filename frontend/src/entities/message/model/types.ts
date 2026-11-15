@@ -15,6 +15,11 @@ export interface DebugMetadata {
   search_ms: number | null;
   generation_ms: number | null;
   sources: DebugSource[];
+  raw_response?: string | null;
+  raw_response_attempts?: string[] | null;
+  parsed_response?: unknown;
+  validation_errors?: string[] | null;
+  final_response?: string | null;
 }
 
 // Сообщение
