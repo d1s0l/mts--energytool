@@ -1,4 +1,4 @@
-import type { Message } from '@/entities/message/model/types';
+import type { DebugMetadata, Message } from '@/entities/message/model/types';
 
 // Состояние сессии
 export type SessionState =
@@ -31,6 +31,17 @@ export interface GetSessionsParams {
 // Ответ GET /api/sessions/{session_id}
 export interface SessionHistoryResponse extends Session {
   messages: Message[];
+}
+
+export interface SessionDebugItem {
+  message_id: string;
+  created_at: string;
+  debug: DebugMetadata | null;
+}
+
+export interface SessionDebugResponse {
+  session_id: string;
+  items: SessionDebugItem[];
 }
 
 // Ответ POST /api/sessions

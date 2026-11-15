@@ -3,7 +3,8 @@ import { useOutletContext } from 'react-router';
 
 import { DebugPanel } from '@/entities/message/ui/DebugPanel/DebugPanel';
 import { ThinkingLoader } from '@/entities/message/ui/ThinkingLoader/ThinkingLoader';
-import { useGetChatQuery } from '@/entities/session/api/sessionApi';
+import type { Message } from '@/entities/message/model/types';
+import { useGetChatQuery, useGetSessionDebugQuery } from '@/entities/session/api/sessionApi';
 import type { CreateSessionResponse } from '@/entities/session/model/session.types';
 import type { StoredSession } from '@/entities/session/model/sessionStorage';
 import type { SendMessageResponse } from '@/entities/send-message/model/types';
@@ -25,6 +26,12 @@ interface LocalDebugMessage {
   text: string;
   status: 'sending' | 'failed' | 'sent';
   response?: SendMessageResponse;
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return Boolean(
+    error && typeof error === 'object' && 'status' in error && error.status === 404,
+  );
 }
 
 export function DebugPage() {
@@ -49,10 +56,25 @@ export function DebugPage() {
     isLoading: isHistoryLoading,
     isFetching: isHistoryFetching,
     isError: isHistoryError,
+    error: historyError,
   } = useGetChatQuery(activeSessionId ?? '', { skip: !activeSessionId });
+  const {
+    currentData: debugData,
+    isLoading: isDebugLoading,
+    isError: isDebugError,
+    error: debugError,
+  } = useGetSessionDebugQuery(activeSessionId ?? '', { skip: !activeSessionId });
   const chat = currentData?.id === activeSessionId ? currentData : undefined;
+  const debugItems =
+    debugData?.session_id === activeSessionId ? debugData.items : [];
+  const debugByMessageId = new Map(
+    debugItems.map((item) => [item.message_id, item.debug] as const),
+  );
   const visibleLocalMessage =
     localMessage?.sessionId === activeSessionId ? localMessage : null;
+  const localAssistantMessage = visibleLocalMessage?.response?.assistant_message;
+  const sessionNotFound =
+    isNotFoundError(historyError) || isNotFoundError(debugError);
   const localMessageInHistory =
     visibleLocalMessage?.status === 'sent' &&
     Boolean(
@@ -60,6 +82,21 @@ export function DebugPage() {
         (message) => message.id === visibleLocalMessage.response?.user_message.id,
       ),
     );
+  const getMessageDebug = (message: Message) => {
+    if (localAssistantMessage?.id === message.id && localAssistantMessage.debug !== null) {
+      return localAssistantMessage.debug;
+    }
+
+    if (debugByMessageId.has(message.id)) {
+      return debugByMessageId.get(message.id) ?? null;
+    }
+
+    if (localAssistantMessage?.id === message.id) {
+      return localAssistantMessage.debug;
+    }
+
+    return message.debug;
+  };
 
   useLayoutEffect(() => {
     if (messagesRef.current) {
@@ -117,13 +154,29 @@ export function DebugPage() {
         {!activeSessionId && (
           <p className={styles.emptyState}>Выберите диалог в боковой панели.</p>
         )}
-        {activeSessionId && isHistoryLoading && (
+        {activeSessionId && sessionNotFound && (
+          <p className={styles.error} role="alert">
+            Сессия не найдена или удалена.
+          </p>
+        )}
+        {activeSessionId && isHistoryLoading && !sessionNotFound && (
           <p className={styles.emptyState}>Загружаем историю диалога...</p>
         )}
-        {activeSessionId && isHistoryError && (
+        {activeSessionId && isHistoryError && !sessionNotFound && (
           <p className={styles.error} role="alert">
             Не удалось загрузить историю диалога.
           </p>
+        )}
+        {activeSessionId && isDebugLoading && !sessionNotFound && (
+          <p className={styles.emptyState}>Загружаем Debug-метаданные...</p>
+        )}
+        {activeSessionId && isDebugError && !sessionNotFound && (
+          <p className={styles.error} role="alert">
+            Не удалось загрузить Debug-метаданные.
+          </p>
+        )}
+        {chat?.messages.length === 0 && !visibleLocalMessage && !sessionNotFound && (
+          <p className={styles.emptyState}>В этом диалоге пока нет сообщений.</p>
         )}
 
         {chat?.messages.map((message) => (
@@ -132,7 +185,9 @@ export function DebugPage() {
             className={message.role === 'user' ? styles.userMessage : styles.assistantMessage}
           >
             <p className={styles.messageText}>{message.text}</p>
-            {message.role === 'assistant' && <DebugPanel metadata={message.debug} />}
+            {message.role === 'assistant' && (
+              <DebugPanel metadata={getMessageDebug(message)} />
+            )}
           </article>
         ))}
 
