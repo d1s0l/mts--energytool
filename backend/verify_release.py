@@ -20,6 +20,7 @@ def main():
     p.add_argument("--output-root", type=Path, required=True)
     p.add_argument("--approved-requirements", type=Path)
     p.add_argument("--offline", action="store_true")
+    p.add_argument("--submission-python", type=Path)
     args = p.parse_args()
     from dotenv import dotenv_values
 
@@ -261,6 +262,8 @@ def main():
             ]
             if args.approved_requirements:
                 packaged += ["--approved-requirements", str(args.approved_requirements)]
+            if args.submission_python:
+                packaged += ["--python", str(args.submission_python)]
             stage("packaged-model", packaged, timeout=1190)
         else:
             skip("packaged-model", "model_dns_unavailable")

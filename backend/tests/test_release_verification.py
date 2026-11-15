@@ -28,6 +28,46 @@ from verify_submission import audit_archive, validate_csv
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_unclassified_pending_question_is_not_repeated_after_contact_refusal(self):
+        question = "Какой формат отчёта удобен?"
+
+        class Client:
+            async def complete(self, messages):
+                return json.dumps(
+                    dict(
+                        answer="Продолжим.",
+                        kind="clarify",
+                        state="awaiting_contacts",
+                        evidence_ids=[],
+                        lead=None,
+                        follow_up_question=question,
+                    )
+                )
+
+        class Search:
+            async def search(self, *args, **kwargs):
+                return {"hits": []}
+
+        consultant = EnergyConsultant(Client())
+        first = asyncio.run(
+            consultant(text="Обсудим учёт.", history=[], search=Search(), message_id="u1")
+        )
+        history = [
+            dict(role="user", content="Обсудим учёт.", message_id="u1"),
+            dict(role="assistant", content=first.text, message_id="a1"),
+        ]
+        second = asyncio.run(
+            consultant(
+                text="Телефон пока не готов оставлять.",
+                history=history,
+                memory=first.dialog_memory,
+                search=Search(),
+                message_id="u2",
+            )
+        )
+        self.assertNotIn("?", second.text)
+        self.assertEqual(second.state, "chatting")
+
     def test_review_can_only_remove_whole_sentences_from_a_confirmed_remaining_answer(self):
         good = "Платформа собирает показания."
         bad = "Она гарантирует экономию."

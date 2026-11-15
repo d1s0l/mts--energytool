@@ -19,7 +19,7 @@ except ModuleNotFoundError:
 
 
 from dialog_memory import (
-    active_scope, check_lead_against_memory, indexed_messages, known_fields, merge_memory, remember_question, question_field, manager_summary, verified_memory_updates, select_active_object, contact_permission, refresh_contact_permission, refresh_contact_phone,
+    active_scope, check_lead_against_memory, indexed_messages, known_fields, merge_memory, remember_question, question_field, question_slot, manager_summary, verified_memory_updates, select_active_object, contact_permission, refresh_contact_permission, refresh_contact_phone,
 )
 
 
@@ -473,7 +473,7 @@ def append_follow_up(data, messages, *, allow_no_follow_up=False):
 
 def reconcile_follow_up(data, messages, memory):
     """Suppress a known or pending slot, including reworded repeated questions."""
-    field = question_field(data.get('follow_up_question'))
+    field = question_slot(data.get('follow_up_question'))
     known = known_fields(memory)
     if any(f['field']=='contact_permission' and f['status']=='declined' for f in memory['facts']):
         known.update({'phone','full_name','company'})
@@ -481,7 +481,7 @@ def reconcile_follow_up(data, messages, memory):
         pending = {q['field'] for q in memory['asked']
                    if q['scope'] in {'client', active_scope(memory)}}
     else:
-        pending = {question_field(m['content']) for m in messages[-8:-1]
+        pending = {question_slot(m['content']) for m in messages[-8:-1]
                    if m['role'] == 'assistant' and '?' in m['content']}
     pending.discard(None)
     if field and (field in known or field in pending):
@@ -729,6 +729,8 @@ class EnergyConsultant:
                 }:
                     raise ValueError("Invalid answer kind")
                 next_memory, memory_warnings = verified_memory_updates(memory, data.get("memory_updates", []), all_messages)
+                if any(f['field']=='contact_permission' and f['status']=='declined' for f in next_memory['facts']):
+                    data['state']='chatting'
                 current_plan = plan
                 if current_plan and current_plan["field"] in known_fields(next_memory):
                     current_plan = None
@@ -813,7 +815,7 @@ class EnergyConsultant:
                             raise ValueError('Unsupported number after sentence filtering')
                 return ConsultantReply(
                     text=answer.strip(),
-                    dialog_memory=remember_question(next_memory, (current_plan["field"] if current_plan else question_field(data.get("follow_up_question"))) if "?" in answer else None, messages[-1]["message_id"]),
+                    dialog_memory=remember_question(next_memory, (current_plan["field"] if current_plan else question_slot(data.get("follow_up_question"))) if "?" in answer else None, messages[-1]["message_id"]),
                     requested_action=action,
                     memory_warnings=memory_warnings,
                     state=data["state"],

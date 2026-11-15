@@ -44,6 +44,7 @@ def check_turn(name, index, reply):
         if index in {0, 2}:
             assert value(active_scope(memory), 'meter_count') == ('40' if index == 0 else '45'), 'meter_count_not_saved'
         if index == 3:
+            assert reply.state=='chatting', 'contact_form_reopened_after_refusal'
             assert facts.get(('client','contact_permission'), {}).get('status') == 'declined', 'refusal_not_saved'
             assert reply.lead is None and reply.requested_action == 'none', 'lead_created_after_refusal'
         if index in {4, 5}:

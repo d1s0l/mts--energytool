@@ -112,6 +112,9 @@ async def verify(kb, db, output, interval=0, turn_interval=45):
                                 )
                                 reply = ConsultantReply(
                                     text=result["assistant_message"]["text"],
+                                    state="chatting"
+                                    if result["state"] == "lead_created"
+                                    else result["state"],
                                     dialog_memory=detail["dialog_memory"],
                                     requested_action="create_lead"
                                     if result.get("lead_id")

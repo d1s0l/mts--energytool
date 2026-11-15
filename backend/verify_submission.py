@@ -112,6 +112,12 @@ def main():
     p.add_argument("--approved-requirements", type=Path)
     p.add_argument("--audit-only", action="store_true")
     p.add_argument("--interval", type=float, default=0)
+    p.add_argument(
+        "--python",
+        dest="runtime_python",
+        default=sys.executable,
+        help="Interpreter of a clean submission environment",
+    )
     args = p.parse_args()
     build_submission(args.archive)
     report = {"status": "running", "entry_point": "python solution.py", "transport_mocked": False}
@@ -133,6 +139,21 @@ def main():
             "LLM_MIN_INTERVAL": args.interval,
             "SUBMISSION_TIMEOUT": 1100,
         }
+        version_probe = subprocess.run(
+            [
+                args.runtime_python,
+                "-c",
+                "import importlib.metadata,json; print(json.dumps({n:importlib.metadata.version(n) for n in ('pydantic','httpx')}))",
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        import json
+
+        report["runtime_packages"] = json.loads(version_probe.stdout)
         questions = read_questions(args.questions) + CONTACT_CASES
         with tempfile.TemporaryDirectory(prefix="energytool-submit-") as temp:
             root = Path(temp)
@@ -147,7 +168,7 @@ def main():
                 writer.writerows(questions)
             env["DATA_DIR"] = str(data)
             result = subprocess.run(
-                [sys.executable, "solution.py"],
+                [args.runtime_python, "solution.py"],
                 cwd=root,
                 env=env,
                 text=True,

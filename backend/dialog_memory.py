@@ -1,5 +1,6 @@
 """Session-local facts with user-message provenance. No product knowledge is stored here."""
 import copy
+import hashlib
 import re
 
 FIELDS = {
@@ -224,9 +225,20 @@ def question_field(question):
         'day_night_split': r'разбивк.*(?:ноч|днев|день)',
         'collection_method': r'как.*собира.*показан|(?:способ|схем).*сбор.*(?:данн|показан)',
         'price_category': r'какая.*ценов.*категори|какой.*ценов.*категори',
+        'resource': r'какие ресурсы|какой ресурс|электроэнерги.*(?:или|и) вод',
         'existing_workshop_meters': r'(?:есть|стоят|установлен).*счетчик.*цех|счетчик.*цех.*(?:есть|стоят|установлен)',
     }
     return next((field for field, pattern in patterns.items() if re.search(pattern, q)), None)
+
+
+def question_slot(question):
+    """Track every pending question, even when its wording has no predefined field."""
+    if not isinstance(question,str) or not question.strip():return None
+    question=re.split(r'(?<=[.!?])\s+',question.strip())[-1]
+    field=question_field(question)
+    if field:return field
+    normalized=' '.join(question.casefold().replace('ё','е').split())
+    return 'question:'+hashlib.sha256(normalized.encode()).hexdigest()[:16]
 
 
 def manager_summary(memory, fallback):
