@@ -24,7 +24,11 @@ from pathlib import Path, PurePosixPath
 
 
 LOGGER = logging.getLogger("rag_search")
-LOGGER.addHandler(logging.NullHandler())
+if not LOGGER.handlers:
+    # The submission adapter does not configure logging; emit safe diagnostics to stderr.
+    LOGGER.addHandler(logging.StreamHandler())
+    LOGGER.setLevel(logging.INFO)
+    LOGGER.propagate = False
 
 
 def _env(name, default=""):
