@@ -22,6 +22,35 @@ from verify_submission import audit_archive, validate_csv
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_direct_contact_request_gets_source_based_summary_without_object_facts(self):
+        class Client:
+            async def complete(self, messages):
+                return json.dumps(
+                    dict(
+                        answer="Данные готовы.",
+                        kind="contacts",
+                        state="chatting",
+                        evidence_ids=[],
+                        lead={
+                            "full_name": "Тест Тестов",
+                            "company": "Альфа",
+                            "phone": "+79990000000",
+                        },
+                        action="create_lead",
+                        lead_intent_quote="Оформите заявку",
+                        follow_up_question=None,
+                    )
+                )
+
+        class Search:
+            async def search(self, *args, **kwargs):
+                return {"hits": []}
+
+        text = "Оформите заявку: Тест Тестов, компания Альфа, телефон +79990000000."
+        reply = asyncio.run(EnergyConsultant(Client())(text=text, history=[], search=Search()))
+        self.assertEqual(reply.requested_action, "create_lead")
+        self.assertIn(text, reply.lead_summary)
+
     def test_explicit_request_not_to_create_lead_overrides_previous_intent(self):
         from consultant_impl import contact_intent
         from dialog_memory import refresh_contact_permission

@@ -787,7 +787,8 @@ class EnergyConsultant:
                     contact_intent(data.get("lead_intent_quote"), all_messages)
                     summary = manager_summary(next_memory, None)
                     if summary is None:
-                        summary = selected_summary(data.get("lead_facts"), all_messages)
+                        summary = (user_summary(all_messages) if data.get('lead_facts') is None
+                                   else selected_summary(data['lead_facts'], all_messages))
                 if data.get("state") not in {"chatting", "awaiting_contacts"}:
                     raise ValueError("Invalid state")
                 data["verified_memory"] = next_memory
