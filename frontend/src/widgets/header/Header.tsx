@@ -7,7 +7,7 @@ export function Header() {
         <header className={styles.header}>
             <div className={styles.logo__block}>
                 <img src='/favicon.svg' className={styles.logo}/>
-                <h1>Enegytool</h1>
+                <h1>Energytool</h1>
             </div>
 
             <div className={styles.button__block}>
